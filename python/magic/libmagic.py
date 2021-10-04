@@ -281,8 +281,9 @@ def writeVpEq(par, tstart):
     avgReEq = fac*np.trapz(par.reEquat[ind:], par.time[ind:])
     roEq = avgReEq*par.ek*(1.-par.radratio)
     avgRolC = fac*np.trapz(par.rolc[ind:], par.time[ind:])
-    st = '%10.3e%5.2f%6.2f%11.3e%11.3e%11.3e' % (par.ek, par.strat, par.pr,
-                                                 par.ra, roEq, avgRolC)
+    st = '{:10.3e}{:5.2f}{:6.2f}{:11.3e}{:11.3e}{:11.3e}'.format(par.ek,
+        par.strat, par.pr, par.ra, roEq, avgRolC)
+
     return st
 
 def progressbar(it, prefix="", size=60):
@@ -304,7 +305,8 @@ def progressbar(it, prefix="", size=60):
     count = len(it)
     def _show(_i):
         x = int(size*_i/count)
-        sys.stdout.write("%s[%s%s] %i/%i\r" % (prefix, "#"*x, "."*(size-x), _i, count))
+        sys.stdout.write("{}[{}{}] {}/{}\r".format(prefix, "#"*x, "."*(size-x),
+                                                   _i, count))
         sys.stdout.flush()
 
     _show(0)
@@ -460,6 +462,73 @@ def anelprof(radius, strat, polind, g0=0., g1=0., g2=1.):
     beta = -ofr*grav*polind/temp0
     return temp0, rho0, beta
 
+def fd_grid(nr, a, b, fd_stretching=0.3, fd_ratio=0.1):
+    """
+    This function defines a stretched grid between a and b
+
+    >>> r_icb = 0.5 ; r_cmb = 1.5; n_r_max=64
+    >>> rr = fd_grid(n_r_max, r_cmb, r_icb)
+
+    :param nr: number of radial grid points
+    :type nr: int
+    :param a: upper boundary of the grid
+    :type a: float
+    :param b: lower boundary of the grid
+    :type b: float
+    :param fd_stretching: fraction of points in the bulk
+    :type fd_stretching: float
+    :param fd_ratio: ratio of minimum to maximum spacing
+    :type fd_ratio: float
+    :returns: the radial grid
+    :returns: the radial grid
+    :rtype: numpy.ndarray
+    """
+
+    ratio1 = fd_stretching
+    ratio2 = fd_ratio
+
+    if abs(a-b-1.0) > 1.0e-12:
+        sys.exit('Not implemented yet')
+
+    rr = np.zeros(nr, dtype=np.float64)
+    rr[0] = a
+
+    if ratio2 == 1.0: # Regular grid
+        dr_before = (a-b)/(float(nr)-1.)
+        dr_after = dr_before
+        for i in range(1, nr):
+            rr[i]=rr[i-1]-dr_before
+    
+    else:
+        n_boundary_points = int( float(nr-1)/(2.*(1+ratio1)) )
+        ratio1 = float(nr-1)/float(2.*n_boundary_points) -1.
+
+        n_bulk_points = nr-1-2*n_boundary_points
+
+        dr_after = np.exp(np.log(ratio2)/float(n_boundary_points))
+        dr_before = 1.
+        for i in range(n_boundary_points):
+            dr_before = dr_before*dr_after
+        dr_before = 1./(float(n_bulk_points)+ \
+                    2.*dr_after*((1-dr_before)/(1.-dr_after)))
+    
+        for i in range(n_boundary_points):
+            dr_before = dr_before*dr_after
+
+        for i in range(1, n_boundary_points+1):
+            rr[i] = rr[i-1]-dr_before
+            dr_before = dr_before/dr_after
+
+        for i in range(n_bulk_points):
+            rr[n_boundary_points+1+i] = rr[n_boundary_points+i]-dr_before
+
+        for i in range(n_boundary_points):
+            dr_before = dr_before*dr_after
+            rr[n_boundary_points+1+n_bulk_points+i] = \
+                rr[n_boundary_points+n_bulk_points+i]-dr_before
+
+    return rr
+
 def chebgrid(nr, a, b):
     """
     This function defines a Gauss-Lobatto grid from a to b.
@@ -467,7 +536,7 @@ def chebgrid(nr, a, b):
     >>> r_icb = 0.5 ; r_cmb = 1.5; n_r_max=65
     >>> rr = chebgrid(n_r_max, r_icb, r_cmb)
 
-    :param nr: number of radial grid points
+    :param nr: number of radial grid points plus one (Nr+1)
     :type nr: int
     :param a: lower limit of the Gauss-Lobatto grid
     :type a: float
@@ -611,9 +680,7 @@ def timeder(time,y):
     >>> dt_ekinpol = timeder(ts,field='ekin_pol')
 
     """
-    out = np.gradient(y,
-                      time,
-                      edge_order=1)
+    out = np.gradient(y, time, edge_order=1)
 
     return out
 
@@ -627,12 +694,8 @@ def secondtimeder(time,y):
     >>> dt_ekinpol = secondtimeder(ts,field='ekin_pol')
 
     """
-    tmp = np.gradient(y,
-                      time,
-                      edge_order=1)
-    out = np.gradient(tmp,
-                      time,
-                      edge_order=1)
+    tmp = np.gradient(y, time, edge_order=1)
+    out = np.gradient(tmp, time, edge_order=1)
     return out
 
 def phideravg(data, minc=1, order=4):
@@ -930,7 +993,8 @@ def getCpuTime(file):
     :returns: the total CPU time
     :rtype: float
     """
-    threads = re.compile(r'[\s]*\![\s]*nThreads\:[\s]*(.*)')
+    threads_old = re.compile(r'[\s]*\![\s]*nThreads\:[\s]*(.*)')
+    threads_new = re.compile(r'[\s]*\![\s]*Number of OMP threads\:[\s]*(.*)')
     ranks = re.compile(r'[\s]*\![\s\w]*ranks[\s\w]*\:[\s]*(.*)')
     runTime = re.compile(r'[\s\!\w]*time:[\s]*([0-9]*)d[\s\:]*([0-9]*)h[\s\:]*([0-9]*)m[\s\:]*([0-9]*)s[\s\:]*([0-9]*)ms.*')
     runTime_new = re.compile(r' \! Total run time:[\s]*([0-9]*)[\s]*h[\s]*([0-9]*)[\s]*m[\s]*([0-9]*)[\s]*s[\s]*([0-9]*)[\s]*ms[\s]*')
@@ -941,8 +1005,10 @@ def getCpuTime(file):
     nRanks = 1 # In case the old OpenMP version is used
     realTime = 0.
     for line in tab:
-        if threads.match(line):
-            nThreads = int(threads.search(line).groups()[0])
+        if threads_old.match(line):
+            nThreads = int(threads_old.search(line).groups()[0])
+        elif threads_new.match(line):
+            nThreads = int(threads_new.search(line).groups()[0])
         elif ranks.match(line):
             nRanks = int(ranks.search(line).groups()[0])
         elif runTime.match(line):
@@ -960,6 +1026,7 @@ def getCpuTime(file):
             realTime = hours+1./60*min+1./3600*sec+1./3.6e6*ms
     f.close()
     cpuTime = nThreads*nRanks*realTime
+
     return cpuTime
 
 def ReadBinaryTimeseries(infile,
@@ -1008,6 +1075,7 @@ def getTotalRunTime():
     totCpuTime = 0
     for file in logFiles:
         totCpuTime += getCpuTime(file)
+
     return totCpuTime
 
 def prime_factors(n):
@@ -1028,4 +1096,5 @@ def prime_factors(n):
             factors.append(i)
     if n > 1:
         factors.append(n)
+
     return factors

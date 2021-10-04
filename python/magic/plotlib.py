@@ -204,7 +204,7 @@ def equatContour(data, radius, minc=1, label=None, levels=defaultLevels,
 
 def merContour(data, radius, label=None, levels=defaultLevels, cm=defaultCm,
                normed=True, vmax=None, vmin=None, cbar=True, tit=True,
-               fig=None, ax=None, bounds=True):
+               fig=None, ax=None, bounds=True, lines=False):
     """
     Plot a meridional cut of a given field
 
@@ -237,6 +237,9 @@ def merContour(data, radius, label=None, levels=defaultLevels, cm=defaultCm,
     :type fig: matplotlib.figure.Figure
     :param ax: a pre-existing axis
     :type ax: matplotlib.axes._subplots.AxesSubplot
+    :param lines: when set to True, over-plot solid lines to highlight
+                  the limits between two adjacent contour levels
+    :type lines: bool
     """
     ntheta, nr = data.shape
 
@@ -273,9 +276,15 @@ def merContour(data, radius, label=None, levels=defaultLevels, cm=defaultCm,
         normed = False
         cs = np.linspace(vmin, vmax, levels)
         im = ax.contourf(xx, yy, data, cs, cmap=cmap, extend='both')
+        if lines:
+            ax.contour(xx, yy, data, cs, colors=['k'], linewidths=0.5,
+                       extend='both', linestyles=['-'])
     else:
         cs = levels
         im = ax.contourf(xx, yy, data, cs, cmap=cmap)
+        if lines:
+            ax.contour(xx, yy, data, cs, colors=['k'], linewidths=0.5,
+                       linestyles=['-'])
         #im = ax.pcolormesh(xx, yy, data, cmap=cmap, antialiased=True)
 
     #To avoid white lines on pdfs
@@ -385,7 +394,7 @@ def radialContour(data, rad=0.85, label=None, proj='hammer', lon_0=0., vmax=None
                 else:
                     fig = plt.figure(figsize=(8,4.5))
                     ax = fig.add_axes([0.01, 0.01, 0.98, 0.87])
-                ax.set_title('%s: r/ro = %.3f' % (label, rad),
+                ax.set_title('{}: r/ro = {:.3f}'.format(label, rad),
                              fontsize=24)
             else:
                 if cbar:
@@ -394,7 +403,7 @@ def radialContour(data, rad=0.85, label=None, proj='hammer', lon_0=0., vmax=None
                 else:
                     fig = plt.figure(figsize=(8,4))
                     ax = fig.add_axes([0.01, 0.01, 0.98, 0.98])
-                #tit1 = r'%.2f Ro' % rad
+                #tit1 = r'{:.2f} Ro'.format(rad)
                 #ax.text(0.12, 0.9, tit1, fontsize=16,
                       #horizontalalignment='right',
                       #verticalalignment='center',
@@ -407,7 +416,7 @@ def radialContour(data, rad=0.85, label=None, proj='hammer', lon_0=0., vmax=None
                 else:
                     fig = plt.figure(figsize=(5,5.5))
                     ax = fig.add_axes([0.01, 0.01, 0.98, 0.9])
-                ax.set_title('%s: r/ro = %.3f' % (label, rad),
+                ax.set_title('{}: r/ro = {:.3f}'.format(label, rad),
                              fontsize=24)
             else:
                 if cbar:
@@ -416,7 +425,7 @@ def radialContour(data, rad=0.85, label=None, proj='hammer', lon_0=0., vmax=None
                 else:
                     fig = plt.figure(figsize=(5,5))
                     ax = fig.add_axes([0.01, 0.01, 0.98, 0.98])
-                tit1 = r'%.2f Ro' % rad
+                tit1 = r'{:.2f} Ro'.format(rad)
                 ax.text(0.12, 0.9, tit1, fontsize=16,
                       horizontalalignment='right',
                       verticalalignment='center',

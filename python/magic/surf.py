@@ -69,7 +69,7 @@ class Surf:
             del dr, dtheta, ds, rr3D, th3D, s3D
 
     def surf(self, field='Bphi', proj='hammer', lon_0=0., r=0.85, vmax=None,
-             vmin=None, lat_0=30., levels=defaultLevels, cm=defaultCm,
+             vmin=None, lat_0=30., levels=defaultLevels, cm=defaultCm, ic=False,
              lon_shift=0, normed=True, cbar=True, tit=True, lines=False):
         """
         Plot the surface distribution of an input field at a given
@@ -122,6 +122,9 @@ class Surf:
         :param normed: when set to True, the colormap is centered around zero.
                        Default is True, except for entropy/temperature plots.
         :type normed: bool
+        :param lines: when set to True, over-plot solid lines to highlight
+                      the limits between two adjacent contour levels
+        :type lines: bool
         """
 
         if proj != 'ortho':
@@ -348,7 +351,7 @@ class Surf:
             else:
                 label = 'vortz'
         else:
-            data, data_ic, label = selectField(self.gr, field, labTex, ic=True)
+            data, data_ic, label = selectField(self.gr, field, labTex, ic=ic)
 
         if field in ['entropy', 's', 'S', 'u2', 'b2', 'nrj', 'temperature']:
             normed = False
@@ -553,7 +556,7 @@ class Surf:
     def avg(self, field='vphi', levels=defaultLevels, cm=defaultCm,
             normed=True, vmax=None, vmin=None, cbar=True, tit=True,
             pol=False, tor=False, mer=False, merLevels=16, polLevels=16,
-            ic=False):
+            ic=False, lines=False):
         """
         Plot the azimutal average of a given field.
 
@@ -604,6 +607,9 @@ class Surf:
         :param ic: when set to True, also display the contour levels in
                    the inner core
         :type ic: bool
+        :param lines: when set to True, over-plot solid lines to highlight
+                      the limits between two adjacent contour levels
+        :type lines: bool
         """
         if pol:
             if ic:
@@ -613,14 +619,13 @@ class Surf:
                 data = np.zeros_like(rr2D)
                 brm = self.gr.Br.mean(axis=0)
                 brm_ic = self.gr.Br_ic.mean(axis=0)
-                brm = np.concatenate((brm, brm_ic), axis=-1)
+                brm = np.concatenate((brm, brm_ic[:, 1:]), axis=-1)
                 for i in range(self.gr.ntheta):
                     th2D[i, :] = self.gr.colatitude[i]+np.pi/2.
                 for i in range(self.gr.nr):
                     rr2D[:, i] = self.gr.radius[i]
                 for i in range(self.gr.n_r_ic_max-1):
-                    rr2D[:, i+self.gr.nr] = self.gr.radius_ic[i] /\
-                                            (1.-self.gr.radratio)
+                    rr2D[:, i+self.gr.nr] = self.gr.radius_ic[i+1]
                 s2D = rr2D * np.abs(np.cos(th2D))
                 data[0, :] = -0.5*s2D[0, :]*brm[0, :]*self.gr.colatitude[0]
 
@@ -1161,7 +1166,7 @@ class Surf:
             normed = False
 
         fig, xx, yy, im = merContour(phiavg, self.gr.radius, label, levels, cm,
-                                     normed, vmax, vmin, cbar, tit)
+                                     normed, vmax, vmin, cbar, tit, lines=lines)
         ax = fig.get_axes()[0]
 
         if ic:
@@ -1186,8 +1191,8 @@ class Surf:
             
         if pol:
             if ic:
-                xx_big = np.concatenate((xx, xx_ic), axis=-1)
-                yy_big = np.concatenate((yy, yy_ic), axis=-1)
+                xx_big = np.concatenate((xx, xx_ic[:, 1:]), axis=-1)
+                yy_big = np.concatenate((yy, yy_ic[:, 1:]), axis=-1)
                 ax.contour(xx_big, yy_big, poloLines, polLevels, colors=['k'],
                            linewidths=[0.8, 0.8])
             else:
@@ -1518,7 +1523,7 @@ class Surf:
 
                 ax.axis('off')
 
-                tit1 = r'$%i^\circ$' % lon
+                tit1 = r'${}^\circ$'.format(lon)
                 ax.text(0.9, 0.9, tit1, fontsize=18,
                       horizontalalignment='right',
                       verticalalignment='center',
@@ -1668,8 +1673,8 @@ def report(nvar=1, levels=defaultLevels, lclean=True):
 
     s = Surf(ivar=nvar)
 
-    st = "Ek = %.2e, Ra = %.2e, Pr = %.1f, $N_{\\rho}$=%.2f, $\eta$=%.1f" % \
-            (s.gr.ek, s.gr.ra, s.gr.pr, s.gr.strat, s.gr.radratio)
+    st = "Ek = {:.2e}, Ra = {:.2e}, Pr = {:.1f}, $N_{\\rho}$={:.2f}, $\eta$={.1f}".format(
+            s.gr.ek, s.gr.ra, s.gr.pr, s.gr.strat, s.gr.radratio)
     file.write("\\begin{center}\\begin{large}\n")
     file.write(" "+st+"\n")
     file.write("\\end{large}\\end{center}\n")

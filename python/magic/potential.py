@@ -4,17 +4,13 @@ from .setup import labTex, defaultCm, defaultLevels, labTex, buildSo
 from .libmagic import *
 from .spectralTransforms import SpectralTransforms
 from .plotlib import radialContour, merContour, equatContour
-import os, re, sys, time
+import os, re, time
 import numpy as np
 import matplotlib.pyplot as plt
 from .npfile import *
 
 if buildSo:
-    if sys.version_info.major == 3:
-        import magic.lmrreader_single3 as Psngl
-    elif sys.version_info.major == 2:
-        import magic.lmrreader_single2 as Psngl
-
+    import magic.lmrreader_single as Psngl
     readingMode = 'f2py'
 else:
     readingMode = 'python'
@@ -59,8 +55,8 @@ def getPotEndianness(filename):
 class MagicPotential(MagicSetup):
     """
     This class allows to load and display the content of the potential
-    files: :ref:`V_lmr.TAG <secVpotFile>`, :ref:`B_lmr.TAG <secBpotFile>`
-    and :ref:`T_lmr.TAG <secTpotFile>`. This class allows to transform
+    files: :ref:`V_lmr.TAG <secPotFiles>`, :ref:`B_lmr.TAG <secPotFiles>`
+    and :ref:`T_lmr.TAG <secPotFiles>`. This class allows to transform
     the poloidal/toroidal potential in spectral space to the physical
     quantities in the physical space. It allows to plot radial and
     equatorial cuts as well as phi-averages.
@@ -81,7 +77,7 @@ class MagicPotential(MagicSetup):
     """
 
     def __init__(self, field='V', datadir='.', tag=None, ave=False, ipot=None,
-                 precision=np.float32, verbose=True):
+                 precision=np.float32, verbose=True, ic=False):
         """
         :param field: 'B', 'V', 'T' or 'Xi' (magnetic field, velocity field,
                       temperature or chemical composition)
@@ -99,7 +95,12 @@ class MagicPotential(MagicSetup):
         :type precision: str
         :param verbose: some info about the SHT layout
         :type verbose: bool
+        :param ic: read or don't read the inner core
+        :type ic: bool
         """
+
+        if field != 'B':
+            ic = False
 
         if hasattr(self, 'radial_scheme'):
             if self.radial_scheme == 'FD':
@@ -110,16 +111,16 @@ class MagicPotential(MagicSetup):
             self.rcheb = True
 
         if ave:
-            self.name = '%s_lmr_ave' % field
+            self.name = '{}_lmr_ave'.format(field)
         else:
-            self.name = '%s_lmr_' % field
+            self.name = '{}_lmr_'.format(field)
 
         if tag is not None:
             if ipot is not None:
-                file = '%s%i.%s' % (self.name, ipot, tag)
+                file = '{}{}.{}'.format(self.name, ipot, tag)
                 filename = os.path.join(datadir, file)
             else:
-                pattern = os.path.join(datadir, '%s*%s' % (self.name, tag))
+                pattern = os.path.join(datadir, '{}*{}'.format(self.name, tag))
                 files = scanDir(pattern)
                 if len(files) != 0:
                     filename = files[-1]
@@ -127,24 +128,24 @@ class MagicPotential(MagicSetup):
                     print('No such tag... try again')
                     return
 
-            if os.path.exists(os.path.join(datadir, 'log.%s' % tag)):
+            if os.path.exists(os.path.join(datadir, 'log.{}'.format(tag))):
                 MagicSetup.__init__(self, datadir=datadir, quiet=True,
-                                    nml='log.%s' % tag)
+                                    nml='log.{}'.format(tag))
         else:
             if ipot is not None:
-                pattern = os.path.join(datadir, '%s%i*' % (self.name, ipot))
+                pattern = os.path.join(datadir, '{}{}*'.format(self.name, ipot))
                 files = scanDir(pattern)
                 filename = files[-1]
             else:
-                pattern = os.path.join(datadir, '%s*' % self.name)
+                pattern = os.path.join(datadir, '{}*'.format(self.name))
                 files = scanDir(pattern)
                 filename = files[-1]
             # Determine the setup
             mask = re.compile(r'.*\.(.*)')
             ending = mask.search(files[-1]).groups(0)[0]
-            if os.path.exists(os.path.join(datadir, 'log.%s' % ending)):
+            if os.path.exists(os.path.join(datadir, 'log.{}'.format(ending))):
                 MagicSetup.__init__(self, datadir=datadir, quiet=True,
-                                    nml='log.%s' % ending)
+                                    nml='log.{}'.format(ending))
 
         # Determine file endianness
         endian, record_marker = getPotEndianness(filename)
@@ -154,10 +155,10 @@ class MagicPotential(MagicSetup):
             self.version = 1  # This will be over-written later
 
         t1 = time.time()
-        self.read(filename, field, endian, record_marker, precision=precision)
+        self.read(filename, field, endian, record_marker, ic, precision=precision)
         t2 = time.time()
         if verbose:
-            print('Time to read %s: %.2e' % (filename, t2-t1))
+            print('Time to read {}: {:.2e}'.format(filename, t2-t1))
 
         self.n_theta_max = int(3*self.l_max/2)
         if self.n_theta_max % 2:  # odd number
@@ -170,13 +171,13 @@ class MagicPotential(MagicSetup):
                                      verbose=verbose)
         t2 = time.time()
         if verbose:
-            print('Time to set up the spectral transforms: %.2e' % (t2-t1))
+            print('Time to set up the spectral transforms: {:.2e}'.format(t2-t1))
         self.colat = self.sh.colat
 
         self.idx = self.sh.idx
         self.ell = self.sh.ell
 
-    def read(self, filename, field, endian, record_marker,
+    def read(self, filename, field, endian, record_marker, ic=False,
              precision=np.float32):
         """
         This routine defines a reader for the various versions of the lmr
@@ -193,6 +194,8 @@ class MagicPotential(MagicSetup):
         :param record_marker: a boolean to specify whether the file contains
                               record marker
         :type record_marker: bool
+        :param ic: read or don't read the inner core
+        :type ic: bool
         :param precision: single or double precision
         :type precision: str
         """
@@ -226,6 +229,15 @@ class MagicPotential(MagicSetup):
                     self.tor = self.tor.reshape((self.n_r_max, self.lm_max))
                     self.tor = self.tor.T
 
+                # Read inner core
+                if ic:
+                    self.pol_ic = infile.fort_read(np.complex64)
+                    self.pol_ic = self.pol_ic.reshape((self.n_r_ic_max, self.lm_max))
+                    self.pol_ic = self.pol_ic.T
+                    self.tor_ic = infile.fort_read(np.complex64)
+                    self.tor_ic = self.tor_ic.reshape((self.n_r_ic_max, self.lm_max))
+                    self.tor_ic = self.tor_ic.T
+
                 infile.close()
 
             else:  # Stream-reader
@@ -236,41 +248,58 @@ class MagicPotential(MagicSetup):
                 else:
                     prefix = '<'
 
-                dt = np.dtype('%si4' % prefix)
+                dt = np.dtype('{}i4'.format(prefix))
                 self.version = np.fromfile(f, dtype=dt, count=1)[0]
-                dt = np.dtype('%s9f4' % prefix)
+                dt = np.dtype('{}9f4'.format(prefix))
                 self.time, self.ra, self.pr, self.raxi, self.sc, self.prmag, \
                     self.ekman, self.radratio, self.sigma_ratio = \
                     np.fromfile(f, dtype=dt, count=1)[0]
-                dt = np.dtype('%s5i4' % prefix)
+                dt = np.dtype('{}5i4'.format(prefix))
                 self.n_r_max, self.n_r_ic_max, self.l_max, self.minc, \
                     self.lm_max = np.fromfile(f, dtype=dt, count=1)[0]
-                dt = np.dtype('%s2f4' % prefix)
+                dt = np.dtype('{}2f4'.format(prefix))
                 self.omega_ic, self.omega_ma = \
                     np.fromfile(f, dtype=dt, count=1)[0]
-                dt = np.dtype("%s%if4" % (prefix, self.n_r_max))
+                dt = np.dtype("{}{}f4".format(prefix, self.n_r_max))
                 self.radius = np.fromfile(f, dtype=dt, count=1)[0]
                 self.rho0 = np.fromfile(f, dtype=dt, count=1)[0]
 
-                dt = np.dtype("%s(%i,%i)c8" % (prefix, self.n_r_max,
-                                               self.lm_max))
+                dt = np.dtype("{}({},{})c8".format(prefix, self.n_r_max,
+                                                   self.lm_max))
                 self.pol = np.fromfile(f, dtype=dt, count=1)[0]
                 self.pol = self.pol.T
                 if (field != 'T' and field != 'Xi'):
                     self.tor = np.fromfile(f, dtype=dt, count=1)[0]
                     self.tor = self.tor.T
 
+                dt = np.dtype("{}({},{})c8".format(prefix, self.n_r_max,
+                                                   self.lm_max))
+                self.pol = np.fromfile(f, dtype=dt, count=1)[0]
+                self.pol = self.pol.T
+                if (field != 'T' and field != 'Xi'):
+                    self.tor = np.fromfile(f, dtype=dt, count=1)[0]
+                    self.tor = self.tor.T
+
+                if ic:
+                    dt = np.dtype("{}({},{})c8".format(prefix, self.n_r_ic_max,
+                                                       self.lm_max))
+                    self.pol_ic = np.fromfile(f, dtype=dt, count=1)[0]
+                    self.pol_ic = self.pol_ic.T
+                    self.tor_ic = np.fromfile(f, dtype=dt, count=1)[0]
+                    self.tor_ic = self.tor_ic.T
+
+
                 f.close()
 
         else:  # F2py reader
 
-            if (field != 'T' and field != 'Xi'):
+            if field != 'T' and field != 'Xi':
                 l_read_tor = True
             else:
                 l_read_tor = False
 
             Prd = Psngl.potreader_single
-            Prd.readpot(filename, endian, l_read_tor, self.version)
+            Prd.readpot(filename, endian, l_read_tor, ic, self.version)
             self.version = Prd.version
             self.n_r_max = Prd.n_r_max
             self.l_max = Prd.l_max
@@ -294,8 +323,18 @@ class MagicPotential(MagicSetup):
             self.time = Prd.time
 
             self.pol = Prd.pol
-            if (field != 'T' and field != 'Xi'):
+            if field != 'T' and field != 'Xi':
                 self.tor = Prd.tor
+
+            if ic:
+                self.pol_ic = Prd.pol_ic
+                self.tor_ic = Prd.tor_ic
+
+        if ic:
+            self.radius_ic = chebgrid(2*self.n_r_ic_max-2, self.radius[-1],
+                                      -self.radius[-1])
+            self.radius_ic = self.radius_ic[:self.n_r_ic_max]
+            self.radius_ic[-1] = 0.
 
     def avg(self, field='vphi', levels=defaultLevels, cm=defaultCm,
             normed=True, vmax=None, vmin=None, cbar=True, tit=True):
@@ -394,7 +433,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Bphi'
         t2 = time.time()
-        print('Transform time (avg): %.2f' % (t2-t1))
+        print('Transform time (avg): {:.2f}'.format(t2-t1))
 
         if field in ('temperature', 'entropy', 's', 'S', 'u2', 'b2', 'nrj'):
             normed = False
@@ -498,7 +537,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Bphi'
         t2 = time.time()
-        print('Transform time (equat): %.2f' % (t2-t1))
+        print('Transform time (equat): {:.2f}'.format(t2-t1))
 
         equator = symmetrize(equator, self.minc)
 
@@ -628,7 +667,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Bphi'
         t2 = time.time()
-        print('Transform time (surf): %.2f' % (t2-t1))
+        print('Transform time (surf): {:.2f}'.format(t2-t1))
 
         rprof = symmetrize(rprof, self.minc)
 

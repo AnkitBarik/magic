@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
-import sys
 import numpy as np
 from .setup import buildSo
 
 if buildSo:
-    if sys.version_info.major == 3:
-        import magic.legendre3 as leg
-    elif  sys.version_info.major == 2:
-        import magic.legendre2 as leg
-
+    import magic.legendre as leg
 
 
 class SpectralTransforms(object):
@@ -47,10 +42,10 @@ class SpectralTransforms(object):
 
         if verbose:
             print('Spectral transform setup:')
-            print('l_max, m_max, minc, lm_max: %i, %i, %i, %i' % \
-                (self.l_max, self.m_max, self.minc, self.lm_max))
-            print('n_phi_max, n_theta_max: %i, %i' % \
-                (self.n_phi_max, self.n_theta_max))
+            print('l_max, m_max, minc, lm_max: {}, {}, {}, {}'.format(
+                self.l_max, self.m_max, self.minc, self.lm_max))
+            print('n_phi_max, n_theta_max: {}, {}'.format(
+                self.n_phi_max, self.n_theta_max))
 
         self.colat = self._legF90.sinth
 

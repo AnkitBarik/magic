@@ -119,12 +119,12 @@ class Movie:
             dat = glob.glob('*[Mm]ov.*')
             str1 = 'Which movie do you want ?\n'
             for k, movie in enumerate(dat):
-                str1 += ' %i) %s\n' % (k+1, movie)
+                str1 += ' {}) {}\n'.format(k+1, movie)
             index = int(input(str1))
             try:
                 filename = dat[index-1]
             except IndexError:
-                print('Non valid index: %s has been chosen instead' % dat[0])
+                print('Non valid index: {} has been chosen instead'.format(dat[0]))
                 filename = dat[0]
 
         else:
@@ -141,7 +141,7 @@ class Movie:
         self.n_fields = int(n_fields)
         if self.n_fields > 1:
             print('!!! Warning: several fields in the movie file !!!')
-            print('!!! %i fields !!!' % self.n_fields)
+            print('!!! {} fields !!!'.format(self.n_fields))
             print('!!! The one displayed is controlled by the    !!!')
             print('!!! input parameter ifield (=0 by default)    !!!')
         self.movtype = int(movtype[ifield])
@@ -165,7 +165,7 @@ class Movie:
         self.radius_ic[:-1] = self.radius[self.n_r_max-1:]
 
         self.radius = self.radius[:self.n_r_max]  # remove inner core
-        # Overwrite radius to ensure double-precision of the 
+        # Overwrite radius to ensure double-precision of the
         # grid (useful for Cheb der)
         rout = 1./(1.-self.radratio)
         rin = self.radratio/(1.-self.radratio)
@@ -176,7 +176,7 @@ class Movie:
         self.phi = infile.fort_read(precision)
 
         # Determine the number of lines by reading the log.TAG file
-        logfile = open('log.%s' % end, 'r')
+        logfile = open('log.{}'.format(end), 'r')
         mot = re.compile(r'  ! WRITING MOVIE FRAME NO\s*(\d*).*')
         mot2 = re.compile(r' ! WRITING TO MOVIE FRAME NO\s*(\d*).*')
         nlines = 0
@@ -214,7 +214,7 @@ class Movie:
             self.data_ic = np.zeros((self.n_fields, self.nvar, self.n_phi_tot,
                                     self.n_theta_max, self.n_r_ic_max+2),
                                     precision)
-        elif n_surface == 1:
+        elif n_surface == 1 or n_surface == -1:
             self.surftype = 'r_constant'
             shape = (self.n_theta_max, self.n_phi_tot)
             self.data = np.zeros((self.n_fields, self.nvar, self.n_phi_tot,
@@ -232,19 +232,23 @@ class Movie:
         elif n_surface == 3:
             self.surftype = 'phi_constant'
             if self.movtype in [1, 2, 3, 14]:  # read inner core
-                shape = (n_r_mov_tot+2, 2*self.n_theta_max)
+                shape = (n_r_mov_tot+2, self.n_theta_max)
+                self.n_theta_plot = 2*self.n_theta_max
             elif self.movtype in [8, 9]:
                 shape = (n_r_mov_tot+2, self.n_theta_max)
-            elif self.movtype in [4, 5, 6, 7, 16, 17, 18, 47, 54]:
-                shape = (self.n_r_max, 2*self.n_theta_max)
-            elif self.movtype in [10, 11, 12, 19, 92, 94, 95]:
+                self.n_theta_plot = self.n_theta_max
+            elif self.movtype in [4, 5, 6, 7, 16, 17, 18, 47, 54, 109]:
                 shape = (self.n_r_max, self.n_theta_max)
+                self.n_theta_plot = 2*self.n_theta_max
+            elif self.movtype in [10, 11, 12, 19, 92, 94, 95, 110]:
+                shape = (self.n_r_max, self.n_theta_max)
+                self.n_theta_plot = self.n_theta_max
             # Inner core is not stored here
-            self.data = np.zeros((self.n_fields, self.nvar, self.n_theta_max,
-                                 self.n_r_max), precision)
+            self.data = np.zeros((self.n_fields, self.nvar, self.n_theta_plot,
+                                  self.n_r_max), precision)
             self.data_ic = np.zeros((self.n_fields, self.nvar,
-                                     self.n_theta_max, self.n_r_ic_max+2),
-                                    precision)
+                                     self.n_theta_plot, self.n_r_ic_max+2),
+                                     precision)
 
         self.time = np.zeros(self.nvar, precision)
 
@@ -256,7 +260,7 @@ class Movie:
                 movieDipLon, movieDipStrength, movieDipStrengthGeo = \
                 infile.fort_read(precision)
             for ll in range(self.n_fields):
-                dat = infile.fort_read(precision, shape=shape)
+                dat = infile.fort_read(precision)
         # then read the remaining requested nvar lines
         for k in range(self.nvar):
             n_frame, t_movieS, omega_ic, omega_ma, movieDipColat, \
@@ -264,16 +268,18 @@ class Movie:
                 infile.fort_read(precision)
             self.time[k] = t_movieS
             for ll in range(self.n_fields):
-                dat = infile.fort_read(precision, shape=shape)
+                dat = infile.fort_read(precision)
                 if n_surface == 0:
+                    dat = dat.reshape(shape)
                     if self.movtype in [1, 2, 3]:
                         datic = dat[self.n_r_max:, ...].T
-                        dat = dat[:self.n_r_max, :].T
+                        dat = dat[:self.n_r_max, ...].T
                         self.data[ll, k, ...] = dat
                         self.data_ic[ll, k, ...] = datic
                     else:
                         self.data[ll, k, ...] = dat.T
                 elif n_surface == 2:
+                    dat = dat.reshape(shape)
                     if self.movtype in [1, 2, 3, 14]:
                         datic = dat[self.n_r_max:, :].T
                         dat = dat[:self.n_r_max, :].T
@@ -283,21 +289,38 @@ class Movie:
                         self.data[ll, k, ...] = dat.T
                 elif n_surface == 3:
                     if self.movtype in [1, 2, 3, 14]:
-                        dat = dat[:self.n_r_max, :self.n_theta_max].T
-                        self.data[ll, k, :, ::2] = dat[:, :n_r_max/2+1]
-                        self.data[ll, k, :, 1::2] = dat[:, n_r_max/2+1:]
+                        len1 = (self.n_r_max*self.n_theta_max*2)
+                        datoc = dat[:len1]
+                        datic = dat[len1:]
+                        datoc0 = datoc[:len(datoc)//2].reshape(self.n_r_max,
+                                                               self.n_theta_max)
+                        datoc1 = datoc[len(datoc)//2:].reshape(self.n_r_max,
+                                                               self.n_theta_max)
+                        dat = np.hstack((datoc0, datoc1))
+                        datic0 = datic[:len(datic)//2].reshape(self.n_r_ic_max+2,
+                                                               self.n_theta_max)
+                        datic1 = datic[len(datic)//2:].reshape(self.n_r_ic_max+2,
+                                                               self.n_theta_max)
+                        dat = np.hstack((datoc0, datoc1))
+                        datic = np.hstack((datic0, datic1))
+                        self.data[ll, k, ...] = dat.T
+                        self.data_ic[ll, k, ...] = datic.T
                     elif self.movtype in [8, 9]:
+                        dat = dat.reshape(shape)
                         datic = dat[self.n_r_max:, :].T
-                        self.data_ic[ll, k, ...] = datic
                         dat = dat[:self.n_r_max, :].T
+                        self.data_ic[ll, k, ...] = datic
                         self.data[ll, k, ...] = dat
-                    elif self.movtype in [4, 5, 6, 7, 16, 17, 18, 47, 54, 91]:
-                        dat = dat[:, :self.n_theta_max].T
-                        self.data[ll, k, :, ::2] = dat[:, :n_r_max/2+1]
-                        self.data[ll, k, :, 1::2] = dat[:, n_r_max/2+1:]
-                    elif self.movtype in [10, 11, 12, 19, 92, 94, 95]:
+                    elif self.movtype in [4, 5, 6, 7, 16, 17, 18, 47, 54, 91, 109]:
+                        dat0 = dat[:len(dat)//2].reshape(shape)
+                        dat1 = dat[len(dat)//2:].reshape(shape)
+                        dat = np.hstack((dat0, dat1))
+                        self.data[ll, k, ...] = dat.T
+                    elif self.movtype in [10, 11, 12, 19, 92, 94, 95, 110]:
+                        dat = dat.reshape(shape)
                         self.data[ll, k, ...] = dat.T
                 else:
+                    dat = dat.reshape(shape)
                     self.data[ll, k, ...] = dat.T
                 if fluct:
                     self.data[ll, k, ...] -= self.data[ll, k, ...].mean(axis=0)
@@ -372,19 +395,28 @@ class Movie:
         cs = np.linspace(vmin, vmax, levels)
 
         if self.surftype == 'phi_constant':
-            th = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+            if self.n_theta_plot == self.n_theta_max:
+                th = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+                fig = plt.figure(figsize=(4, 8))
+                th0 = th
+            else:
+                th0 = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+                th1 = np.linspace(np.pi/2., 3.*np.pi/2., self.n_theta_max)
+                th = np.concatenate((th0, th1))
+                fig = plt.figure(figsize=(6.5, 6))
+                # Plotting trick using th0
+                th0 = np.linspace(np.pi/2, np.pi/2+2.*np.pi, 2*self.n_theta_max)
             rr, tth = np.meshgrid(self.radius, th)
             xx = rr * np.cos(tth)
             yy = rr * np.sin(tth)
-            xxout = rr.max() * np.cos(th)
-            yyout = rr.max() * np.sin(th)
-            xxin = rr.min() * np.cos(th)
-            yyin = rr.min() * np.sin(th)
+            xxout = rr.max() * np.cos(th0)
+            yyout = rr.max() * np.sin(th0)
+            xxin = rr.min() * np.cos(th0)
+            yyin = rr.min() * np.sin(th0)
             if ic:
                 rr, tth = np.meshgrid(self.radius_ic, th)
                 xx_ic = rr * np.cos(tth)
                 yy_ic = rr * np.sin(tth)
-            fig = plt.figure(figsize=(4, 8))
         elif self.surftype == 'r_constant':
             th = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
             phi = np.linspace(-np.pi, np.pi, self.n_phi_tot)
@@ -470,15 +502,24 @@ class Movie:
             cs = np.linspace(vmin, vmax, levels)
 
         if self.surftype == 'phi_constant':
-            th = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+            if self.n_theta_plot == self.n_theta_max:
+                th = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+                fig = plt.figure(figsize=(4, 8))
+                th0 = th
+            else:
+                th0 = np.linspace(np.pi/2., -np.pi/2., self.n_theta_max)
+                th1 = np.linspace(np.pi/2., 3.*np.pi/2., self.n_theta_max)
+                th = np.concatenate((th0, th1))
+                fig = plt.figure(figsize=(6.5, 6))
+                # Plotting trick using th0
+                th0 = np.linspace(np.pi/2, np.pi/2+2.*np.pi, 2*self.n_theta_max)
             rr, tth = np.meshgrid(self.radius, th)
             xx = rr * np.cos(tth)
             yy = rr * np.sin(tth)
-            xxout = rr.max() * np.cos(th)
-            yyout = rr.max() * np.sin(th)
-            xxin = rr.min() * np.cos(th)
-            yyin = rr.min() * np.sin(th)
-            fig = plt.figure(figsize=(4, 8))
+            xxout = rr.max() * np.cos(th0)
+            yyout = rr.max() * np.sin(th0)
+            xxin = rr.min() * np.cos(th0)
+            yyin = rr.min() * np.sin(th0)
 
             if ic:
                 rr, tth = np.meshgrid(self.radius_ic, th)
@@ -597,9 +638,9 @@ class Movie:
                 ax.axis('off')
                 man.canvas.draw()
             if png:
-                filename = 'movie/img%05d.png' % k
-                print('write %s' % filename)
-                # st = 'echo %i' % ivar + ' > movie/imgmax'
+                filename = 'movie/img{:05d}.png'.format(k)
+                print('write {}'.format(filename))
+                # st = 'echo {}'.format(ivar) + ' > movie/imgmax'
                 if bgcolor is not None:
                     fig.savefig(filename, facecolor=bgcolor, dpi=dpi)
                 else:

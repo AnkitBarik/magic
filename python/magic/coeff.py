@@ -127,35 +127,35 @@ class MagicCoeffCmb(MagicSetup):
             self.name = 'B_coeff_cmb'
 
         if tag is not None:
-            pattern = os.path.join(datadir,  '%s.%s' % (self.name, tag))
+            pattern = os.path.join(datadir,  '{}.{}'.format(self.name, tag))
             files = scanDir(pattern)
 
             # Either the log.tag directly exists and the setup is easy to obtain
-            if os.path.exists(os.path.join(datadir, 'log.%s' % tag)):
+            if os.path.exists(os.path.join(datadir, 'log.{}'.format(tag))):
                 MagicSetup.__init__(self, datadir=datadir, quiet=True,
-                                    nml='log.%s' % tag)
-            # Or the tag is a bit more complicated and we need to find 
+                                    nml='log.{}'.format(tag))
+            # Or the tag is a bit more complicated and we need to find
             # the corresponding log file
             else:
-                pattern = os.path.join(datadir, '%s' % self.name)
-                mask = re.compile(r'%s\.(.*)' % pattern)
+                pattern = os.path.join(datadir, '{}'.format(self.name))
+                mask = re.compile(r'{}\.(.*)'.format(pattern))
                 if mask.match(files[-1]):
                     ending = mask.search(files[-1]).groups(0)[0]
-                    pattern = os.path.join(datadir, 'log.%s' % ending)
+                    pattern = os.path.join(datadir, 'log.{}'.format(ending))
                     if logFiles.__contains__(pattern):
                         MagicSetup.__init__(self, datadir=datadir, quiet=True,
-                                            nml='log.%s' % ending)
+                                            nml='log.{}'.format(ending))
         else:
-            pattern = os.path.join(datadir, '%s.*' % self.name)
+            pattern = os.path.join(datadir, '{}.*'.format(self.name))
             files = scanDir(pattern)
             filename = files[-1]
             # Determine the setup
-            mask = re.compile(r'%s\.(.*)' % self.name)
+            mask = re.compile(r'{}\.(.*)'.format(self.name))
             ending = mask.search(files[-1]).groups(0)[0]
-            if os.path.exists('log.%s' % ending):
+            if os.path.exists('log.{}'.format(ending)):
                 try:
                     MagicSetup.__init__(self, datadir=datadir, quiet=True,
-                                    nml='log.%s' % ending)
+                                    nml='log.{}'.format(ending))
                 except AttributeError:
                     pass
 
@@ -165,7 +165,7 @@ class MagicCoeffCmb(MagicSetup):
         # Read the B_coeff files (by stacking the different tags)
         data = []
         for k, file in enumerate(files):
-            if not quiet: print('Reading %s' % file)
+            if not quiet: print('Reading {}'.format(file))
             f = npfile(file, endian='B')
             self.l_max_cmb, self.minc, n_data = f.fort_read('i')
             self.m_max_cmb = int((self.l_max_cmb/self.minc)*self.minc)
@@ -264,7 +264,7 @@ class MagicCoeffCmb(MagicSetup):
             else:
                 self.taul = np.zeros_like(self.ElM[1:])
 
-        if iplot:
+        if iplot and not ave:
             self.plot()
 
     def __add__(self, new):
@@ -508,6 +508,8 @@ class MagicCoeffCmb(MagicSetup):
             blmCut = self.blm
 
         nlat = int(max(int(self.l_max_cmb*(3./2./2.)*2.),192))
+        if np.mod(nlat, 2) == 1:
+            nlat += 1
         nphi = int(2*nlat/self.minc)
 
         # Define spectral transform setup
@@ -575,7 +577,7 @@ class MagicCoeffCmb(MagicSetup):
                                colors=['k', 'k'], linewidths=[0.7, 0.7])
                 ax.plot(xxout, yyout, 'k-', lw=1.5)
                 ax.plot(xxin, yyin, 'k-', lw=1.5)
-                #ax.text(0.12, 0.9, 't=%.6f' % self.time[0], fontsize=16,
+                #ax.text(0.12, 0.9, 't={:.6f}'.format(self.time[0]), fontsize=16,
                         #horizontalalignment='right',
                         #verticalalignment='center', transform = ax.transAxes)
 
@@ -609,7 +611,7 @@ class MagicCoeffCmb(MagicSetup):
                                linestyles=['-', '-'], linewidths=[0.7, 0.7])
                 ax.plot(xxout, yyout, 'k-', lw=1.5)
                 ax.plot(xxin, yyin, 'k-', lw=1.5)
-                #ax.text(0.12, 0.9, 't=%.6f' % self.time[k], fontsize=16,
+                #ax.text(0.12, 0.9, 't={:.6f}'.format(self.time[k]), fontsize=16,
                         #horizontalalignment='right',
                         #verticalalignment='center', transform = ax.transAxes)
 
@@ -624,9 +626,9 @@ class MagicCoeffCmb(MagicSetup):
                 ax.axis('off')
                 man.canvas.draw()
             if png:
-                filename = 'movie/img%05d.png' % k
-                print('write %s' % filename)
-                #st = 'echo %i' % ivar + ' > movie/imgmax'
+                filename = 'movie/img{:05d}.png'.format(k)
+                print('write {}'.format(filename))
+                #st = 'echo {}'.format(ivar) + ' > movie/imgmax'
                 if bgcolor is not None:
                     fig.savefig(filename, facecolor=bgcolor, dpi=dpi)
                 else:
@@ -659,7 +661,7 @@ class MagicCoeffR(MagicSetup):
         :type scale_b: float
         :param iplot: a logical to toggle the plot (default is True)
         :type iplot: bool
-        :param field: 'B', 'V' or 'T' (magnetic field, velocity field or temperature)
+        :param field: 'B', 'V', 'T' or 'Xi' (magnetic field, velocity field, temperature or composition)
         :type field: str
         :param r: an integer to characterise which file we want to plot
         :type r: int
@@ -681,19 +683,19 @@ class MagicCoeffR(MagicSetup):
         self.rcmb = 1./(1.-self.radratio)
         ricb = self.radratio/(1.-self.radratio)
 
-        files = scanDir('%s_coeff_r%i.%s' % (field,r,tag))
+        files = scanDir('{}_coeff_r{}.{}'.format(field,r,tag))
 
         # Read the B_coeff files (by stacking the different tags)
         data = []
         for k, file in enumerate(files):
-            if not quiet: print('Reading %s' % file)
+            if not quiet: print('Reading {}'.format(file))
             f = npfile(file, endian='B')
             if precision == np.float32:
                 out = f.fort_read('3i4,f4')[0]
             else:
                 out = f.fort_read('3i4,f8')[0]
             self.l_max_r, self.minc, n_data = out[0]
-            self.m_max_r = int((self.l_max_r/self.minc)*self.minc)
+            self.m_max_r = int((self.l_max_r//self.minc)*self.minc)
             self.radius = out[1]
 
             while 1:
@@ -724,35 +726,40 @@ class MagicCoeffR(MagicSetup):
         data = np.array(data, dtype=precision)
         self.nstep = data.shape[0]
         self.wlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        self.dwlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        self.zlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
+        if field == 'V' or field == 'B':
+            self.dwlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
+            self.zlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
 
         # Get time
         self.time = np.zeros(self.nstep, dtype=precision)
         self.time = data[:, 0]
 
         # wlm
-        self.wlm[:, 1:self.l_max_r+1] = data[:, 1:self.l_max_r+1]
+        if field == 'T' or field == 'Xi': #T or Xi contains l = m = 0
+            self.wlm[:, 0:self.l_max_r+1] = data[:, 1:self.l_max_r+2]
+        else:
+            self.wlm[:, 1:self.l_max_r+1] = data[:, 1:self.l_max_r+1]
         k = self.l_max_r+1
         for m in range(self.minc, self.l_max_r+1, self.minc):
             for l in range(m, self.l_max_r+1):
                 self.wlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
                 k += 2
 
-        # dwlm
-        self.dwlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
-        k += self.l_max_r
-        for m in range(self.minc, self.l_max_r+1, self.minc):
-            for l in range(m, self.l_max_r+1):
-                self.dwlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
-                k += 2
-        # zlm
-        self.zlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
-        k += self.l_max_r
-        for m in range(self.minc, self.l_max_r+1, self.minc):
-            for l in range(m, self.l_max_r+1):
-                self.zlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
-                k += 2
+        if field == 'V' or field == 'B':
+            # dwlm
+            self.dwlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
+            k += self.l_max_r
+            for m in range(self.minc, self.l_max_r+1, self.minc):
+                for l in range(m, self.l_max_r+1):
+                    self.dwlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
+                    k += 2
+            # zlm
+            self.zlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
+            k += self.l_max_r
+            for m in range(self.minc, self.l_max_r+1, self.minc):
+                for l in range(m, self.l_max_r+1):
+                    self.zlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
+                    k += 2
 
         # ddw in case B is stored
         if field == 'B':
@@ -769,44 +776,45 @@ class MagicCoeffR(MagicSetup):
             if lCut < self.l_max_r:
                 self.truncate(lCut, field=field)
 
-        self.e_pol_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
-        self.e_tor_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
-        self.e_pol_l = np.zeros((self.nstep, self.l_max_r+1), precision)
-        self.e_tor_l = np.zeros((self.nstep, self.l_max_r+1), precision)
+        if field == 'V' or field == 'B':
+            self.e_pol_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
+            self.e_tor_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
+            self.e_pol_l = np.zeros((self.nstep, self.l_max_r+1), precision)
+            self.e_tor_l = np.zeros((self.nstep, self.l_max_r+1), precision)
 
-        for l in range(1, self.l_max_r+1):
-            self.e_pol_l[:, l] = 0.
-            self.e_tor_l[:, l] = 0.
-            self.e_pol_axi_l[:, l] = 0.
-            self.e_tor_axi_l[:, l] = 0.
-            for m in range(0, l+1, self.minc):
-                lm = self.idx[l, m]
+            for l in range(1, self.l_max_r+1):
+                self.e_pol_l[:, l] = 0.
+                self.e_tor_l[:, l] = 0.
+                self.e_pol_axi_l[:, l] = 0.
+                self.e_tor_axi_l[:, l] = 0.
+                for m in range(0, l+1, self.minc):
+                    lm = self.idx[l, m]
 
-                if m == 0:
-                    epol = 0.5*self.ell[lm]*(self.ell[lm]+1)*( \
-                           self.ell[lm]*(self.ell[lm]+1)/self.radius**2* \
-                           abs(self.wlm[:,lm])**2+ abs(self.dwlm[:,lm])**2 )
-                    etor = 0.5*self.ell[lm]*(self.ell[lm]+1)*abs(self.zlm[:, lm])**2
+                    if m == 0:
+                        epol = 0.5*self.ell[lm]*(self.ell[lm]+1)*( \
+                               self.ell[lm]*(self.ell[lm]+1)/self.radius**2* \
+                               abs(self.wlm[:,lm])**2+ abs(self.dwlm[:,lm])**2 )
+                        etor = 0.5*self.ell[lm]*(self.ell[lm]+1)*abs(self.zlm[:, lm])**2
 
-                    self.e_pol_axi_l[:, l] += epol
-                    self.e_tor_axi_l[:, l] += etor
-                else:
-                    epol = self.ell[lm]*(self.ell[lm]+1)*( \
-                           self.ell[lm]*(self.ell[lm]+1)/self.radius**2* \
-                           abs(self.wlm[:,lm])**2+ abs(self.dwlm[:,lm])**2 )
-                    etor = self.ell[lm]*(self.ell[lm]+1)*abs(self.zlm[:, lm])**2
+                        self.e_pol_axi_l[:, l] += epol
+                        self.e_tor_axi_l[:, l] += etor
+                    else:
+                        epol = self.ell[lm]*(self.ell[lm]+1)*( \
+                               self.ell[lm]*(self.ell[lm]+1)/self.radius**2* \
+                               abs(self.wlm[:,lm])**2+ abs(self.dwlm[:,lm])**2 )
+                        etor = self.ell[lm]*(self.ell[lm]+1)*abs(self.zlm[:, lm])**2
 
-                self.e_pol_l[:, l] += epol
-                self.e_tor_l[:, l] += etor
+                    self.e_pol_l[:, l] += epol
+                    self.e_tor_l[:, l] += etor
 
 
-        # Time-averaged energy
-        facT = 1./(self.time[-1]-self.time[0])
+            # Time-averaged energy
+            facT = 1./(self.time[-1]-self.time[0])
 
-        self.e_pol_lM = facT * np.trapz(self.e_pol_l, self.time, axis=0)
-        self.e_tor_lM = facT * np.trapz(self.e_tor_l, self.time, axis=0)
-        self.e_pol_axi_lM = facT * np.trapz(self.e_pol_axi_l, self.time, axis=0)
-        self.e_tor_axi_lM = facT * np.trapz(self.e_tor_axi_l, self.time, axis=0)
+            self.e_pol_lM = facT * np.trapz(self.e_pol_l, self.time, axis=0)
+            self.e_tor_lM = facT * np.trapz(self.e_tor_l, self.time, axis=0)
+            self.e_pol_axi_lM = facT * np.trapz(self.e_pol_axi_l, self.time, axis=0)
+            self.e_tor_axi_lM = facT * np.trapz(self.e_tor_axi_l, self.time, axis=0)
 
     def truncate(self, lCut, field='B'):
         """
@@ -818,9 +826,9 @@ class MagicCoeffR(MagicSetup):
         self.l_max_r = lCut
         self.m_max_r = int((self.l_max_r/self.minc)*self.minc)
 
-        self.lm_max_r = self.m_max_r*(self.l_max_r+1)/self.minc - \
+        self.lm_max_r = int(self.m_max_r*(self.l_max_r+1)/self.minc - \
                         self.m_max_r*(self.m_max_r-self.minc)/(2*self.minc) + \
-                        self.l_max_r-self.m_max_r+1
+                        self.l_max_r-self.m_max_r+1)
 
         # Get indices location
         idx_new = np.zeros((self.l_max_r+1, self.m_max_r+1), 'i')
@@ -837,19 +845,25 @@ class MagicCoeffR(MagicSetup):
                 k +=1
 
         wlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        dwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        zlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        if field == 'B':
-            ddwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
+        if field == 'V' or field == 'B':
+            dwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
+            zlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
+            if field == 'B':
+                ddwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
 
-        for l in range(1, self.l_max_r+1):
-            for m in range(0, l+1, self.minc):
-                lm = idx_new[l, m]
-                wlm_new[:, lm] = self.wlm[:, self.idx[l,m]]
-                zlm_new[:, lm] = self.zlm[:, self.idx[l,m]]
-                dwlm_new[:, lm] = self.dwlm[:, self.idx[l,m]]
-                if field == 'B':
-                    ddwlm_new[:, lm] = self.ddwlm[:, self.idx[l,m]]
+            for l in range(1, self.l_max_r+1):
+                for m in range(0, l+1, self.minc):
+                    lm = idx_new[l, m]
+                    wlm_new[:, lm] = self.wlm[:, self.idx[l,m]]
+                    zlm_new[:, lm] = self.zlm[:, self.idx[l,m]]
+                    dwlm_new[:, lm] = self.dwlm[:, self.idx[l,m]]
+                    if field == 'B':
+                        ddwlm_new[:, lm] = self.ddwlm[:, self.idx[l,m]]
+        else:
+            for l in range(1, self.l_max_r+1):
+                for m in range(0, l+1, self.minc):
+                    lm = idx_new[l, m]
+                    wlm_new[:, lm] = self.wlm[:, self.idx[l,m]]
 
         #for m in range(self.minc, self.l_max_r+1, self.minc):
             #for l in range(m, self.l_max_r+1):
@@ -863,11 +877,11 @@ class MagicCoeffR(MagicSetup):
         self.ms = ms_new
 
         self.wlm = wlm_new
-        self.dwlm = dwlm_new
-        self.zlm = zlm_new
-        if field == 'B':
-            self.ddwlm = ddwlm_new
-
+        if field == 'V' or field == 'B':
+            self.dwlm = dwlm_new
+            self.zlm = zlm_new
+            if field == 'B':
+                self.ddwlm = ddwlm_new
 
     def movieRad(self, cut=0.5, levels=12, cm='RdYlBu_r', png=False, step=1,
                  normed=False, dpi=80, bgcolor=None, deminc=True, removeMean=False,
@@ -1005,9 +1019,9 @@ class MagicCoeffR(MagicSetup):
                 man.canvas.draw()
 
                 if png:
-                    filename = 'movie/img%05d.png' % k
-                    print('write %s' % filename)
-                    #st = 'echo %i' % ivar + ' > movie/imgmax'
+                    filename = 'movie/img{:05d}.png'.format(k)
+                    print('write {}'.format(filename))
+                    #st = 'echo {}'.format(ivar) + ' > movie/imgmax'
                     if bgcolor is not None:
                         fig.savefig(filename, facecolor=bgcolor, dpi=dpi)
                     else:
@@ -1044,9 +1058,9 @@ class MagicCoeffR(MagicSetup):
                 ax.axis('off')
                 man.canvas.draw()
                 if png:
-                    filename = 'movie/img%05d.png' % k
-                    print('write %s' % filename)
-                    #st = 'echo %i' % ivar + ' > movie/imgmax'
+                    filename = 'movie/img{:05d}.png'.format(k)
+                    print('write {}'.format(filename))
+                    #st = 'echo {}'.format(ivar) + ' > movie/imgmax'
                     if bgcolor is not None:
                         fig.savefig(filename, facecolor=bgcolor, dpi=dpi)
                     else:
