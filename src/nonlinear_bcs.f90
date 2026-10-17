@@ -9,7 +9,7 @@ module nonlinear_bcs
    use physical_parameters, only: sigma_ratio, conductance_ma, prmag, oek, &
        &                          po_diff, diff_prec_angle
    use horizontal_data, only: cosTheta, sinTheta_E2, phi, sinTheta, O_sin_theta
-   use constants, only: two, y10_norm, y11_norm, zero
+   use constants, only: one, two, y10_norm, y11_norm, zero
    use useful, only: abortRun
    use special, only: l_vr_cmb, l_vr_icb
    use logic, only: l_diff_prec
@@ -128,7 +128,9 @@ contains
       !  :math:`z`-axis, ``vp= r \sin(theta) v_phi = r**2 sin(theta)**2 omega``
       !  and ``cvr= r**2 * radial component of (\curl v) = r**2  2 cos(theta) omega``
       !  During differential precession, the boundary also rotates about an
-      !  equatorial axis (omx, omy) and ``vt`` is non-zero.
+      !  equatorial axis (omx, omy) and ``vt`` is non-zero. The equatorial
+      !  axis turns at the inertial precession rate po_diff*oek minus the
+      !  frame rotation rate oek, i.e. at (po_diff-1)*oek.
       !
 
       !-- Input of variables:
@@ -164,8 +166,8 @@ contains
       end if
 
       if ( l_diff_prec ) then
-         omx = oek * sin(diff_prec_angle) * cos(po_diff * oek * time)
-         omy = oek * sin(diff_prec_angle) * sin(po_diff * oek * time)
+         omx = oek * sin(diff_prec_angle) * cos((po_diff-one) * oek * time)
+         omy = oek * sin(diff_prec_angle) * sin((po_diff-one) * oek * time)
       else
          omx = 0.0_cp
          omy = 0.0_cp

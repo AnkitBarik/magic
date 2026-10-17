@@ -1696,8 +1696,10 @@ contains
    subroutine get_z11_diff_prec(time, z11_ma, z11_ic)
       !
       ! Boundary values of z(l=1,m=1) for differential precession: the mantle
-      ! and inner core rotate about an axis tilted by diff_prec_angle from z,
-      ! whose equatorial component turns at the rate po_diff*oek.
+      ! and inner core rotate about an axis tilted by diff_prec_angle from z.
+      ! This axis precesses about z at po_diff*oek in the inertial frame, so in
+      ! the frame rotating at oek about z its equatorial component turns at
+      ! (po_diff-1)*oek.
       !
 
       !-- Input variable
@@ -1710,7 +1712,7 @@ contains
       real(cp) :: om_eq, phase
 
       om_eq = oek*sin(diff_prec_angle)
-      phase = po_diff*oek*time
+      phase = (po_diff-one)*oek*time
 
       z11_ma = om_eq/c_z11_omega_ma*cmplx(cos(phase),-sin(phase),kind=cp)
       z11_ic = om_eq/c_z11_omega_ic*cmplx(cos(phase),-sin(phase),kind=cp)
