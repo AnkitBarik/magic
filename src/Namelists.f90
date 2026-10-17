@@ -86,7 +86,7 @@ contains
       &    epsS,slopeStrat,rStrat,ampStrat,                       &
       &    r_LCR,nVarDiff,nVarVisc,difExp,nVarEps,interior_model, &
       &    nVarEntropyGrad,l_isothermal,ktopp,po,prec_angle,      &
-      &    po_diff,diff_prec_angle,                               &
+      &    precession_frame,                                      &
       &    dilution_fac,stef,tmelt,phaseDiffFac,penaltyFac,       &
       &    epsPhase,ktopphi,kbotphi,ampForce
 
@@ -580,27 +580,31 @@ contains
       end if
 
       !-- If Poincaré number is not zero precession in turned on
-      if ( po == 0.0_cp ) then
-         l_precession = .false.
-      else
-         l_precession = .true.
+      !-- precession_frame="mantle": frame attached to the mantle (Poincare force)
+      !-- precession_frame="fluid" : frame rotating at oek about the precession
+      !--                            axis, mantle and inner core rotation imposed
+      !--                            through the boundary conditions
+      call capitalize(precession_frame)
+      l_precession = .false.
+      l_prec_fluid_frame = .false.
+      if ( po /= 0.0_cp ) then
+         if ( index(precession_frame, 'MANTLE') == 1 ) then
+            l_precession = .true.
+         else if ( index(precession_frame, 'FLUID') == 1 ) then
+            l_prec_fluid_frame = .true.
+            l_rot_ma = .true.
+            l_rot_ic = .true.
+            l_SRMA = .true.
+            l_SRIC = .true.
+            !-- A fresh start begins with a rigid rotation of the fluid and no
+            !-- stored explicit terms: use AB1 for the first step, otherwise
+            !-- the first multistep iteration over-rotates the fluid
+            if ( .not. l_start_file ) l_AB1 = .true.
+         else
+            call abortRun('! precession_frame should be either "mantle" or "fluid"')
+         end if
+         prec_angle = prec_angle*pi/180.0_cp
       end if
-
-      if ( l_precession ) prec_angle = prec_angle*pi/180.0_cp
-
-      !-- Same as above for differential precession
-
-      if ( po_diff == 0.0_cp ) then
-         l_diff_prec = .false.
-      else
-         l_diff_prec = .true.
-         l_rot_ma = .true.
-         l_rot_ic = .true.
-         l_SRMA = .true.
-         l_SRIC = .true.
-      end if
-
-      if ( l_diff_prec ) diff_prec_angle = diff_prec_angle*pi/180.0_cp
 
       !-- New checking of magnetic boundary condition.
       if ( l_mag .and. kbotb > 4 ) then
@@ -960,8 +964,8 @@ contains
       write(n_out,'(''  stef            ='',ES14.6,'','')') stef
       write(n_out,'(''  tmelt           ='',ES14.6,'','')') tmelt
       write(n_out,'(''  prec_angle      ='',ES14.6,'','')') prec_angle
-      write(n_out,'(''  po_diff         ='',ES14.6,'','')') po_diff
-      write(n_out,'(''  diff_prec_angle ='',ES14.6,'','')') diff_prec_angle
+      length=len_trim(precession_frame)
+      write(n_out,*) " precession_frame= """,precession_frame(1:length),""","
       write(n_out,'(''  dilution_fac    ='',ES14.6,'','')') dilution_fac
       write(n_out,'(''  ampForce        ='',ES14.6,'','')') ampForce
       write(n_out,'(''  epsc0           ='',ES14.6,'','')') epsc0/sq4pi
@@ -1404,8 +1408,7 @@ contains
       prmag       =5.0_cp
       po          =0.0_cp
       prec_angle  =23.5_cp
-      po_diff     =0.0_cp
-      diff_prec_angle=23.5_cp
+      precession_frame="mantle"
       epsc0       =0.0_cp
       epscxi0     =0.0_cp
       Bn          =1.0_cp

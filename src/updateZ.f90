@@ -15,14 +15,14 @@ module updateZ_mod
    use radial_functions, only: visc, or1, or2, rscheme_oc, dLvisc, beta, &
        &                       rho0, r_icb, r_cmb, r, beta, dbeta
    use physical_parameters, only: kbotv, ktopv, prec_angle, po, oek,     &
-       &                          gammatau_gravi, po_diff, diff_prec_angle
+       &                          gammatau_gravi
    use num_param, only: AMstart, dct_counter, solve_counter
    use torsional_oscillations, only: ddzASL
    use blocking, only: lo_sub_map, lo_map, llm, ulm, st_map
    use horizontal_data, only: hdif_V
    use logic, only: l_rot_ma, l_rot_ic, l_SRMA, l_SRIC, l_z10mat, l_precession, &
        &            l_correct_AMe, l_correct_AMz, l_parallel_solve, l_TO,       &
-       &            l_finite_diff, l_full_sphere, l_diff_prec
+       &            l_finite_diff, l_full_sphere, l_prec_fluid_frame
    use constants, only: c_lorentz_ma, c_lorentz_ic, c_dt_z10_ma, c_dt_z10_ic, &
        &                c_moi_ma, c_moi_ic, c_z10_omega_ma, c_z10_omega_ic,   &
        &                c_moi_oc, y10_norm, y11_norm, zero, one, two, four,   &
@@ -219,7 +219,7 @@ contains
       integer :: n_r_out            ! counts cheb modes
       real(cp) :: prec_fac
       real(cp) :: dom_ma, dom_ic
-      complex(cp) :: z11_ma, z11_ic ! z(l=1,m=1) at CMB/ICB for differential precession
+      complex(cp) :: z11_ma, z11_ic ! z(l=1,m=1) at CMB/ICB for precession in fluid frame
       integer :: l1m0          ! position of (l=1,m=0) and (l=1,m=1) in lm.
       integer :: nLMB
 
@@ -235,8 +235,8 @@ contains
          prec_fac = 0.0_cp
       end if
 
-      if ( l_diff_prec ) then
-         call get_z11_diff_prec(time, z11_ma, z11_ic)
+      if ( l_prec_fluid_frame ) then
+         call get_z11_prec(time, z11_ma, z11_ic)
       else
          z11_ma = zero
          z11_ic = zero
@@ -333,7 +333,7 @@ contains
                         tOmega_ma2=time+tShift_ma2
                         omega_ma= omega_ma1*cos(omegaOsz_ma1*tOmega_ma1) + &
                         &         omega_ma2*cos(omegaOsz_ma2*tOmega_ma2) + &
-                        &         omega_diff
+                        &         omega_prec
                         rhs(1)=omega_ma
                      else if ( ktopv == 2 .and. l_rot_ma ) then  ! time integration
                         rhs(1)=dom_ma
@@ -346,7 +346,7 @@ contains
                         tOmega_ic2=time+tShift_ic2
                         omega_ic= omega_ic1*cos(omegaOsz_ic1*tOmega_ic1) + &
                         &         omega_ic2*cos(omegaOsz_ic2*tOmega_ic2) + &
-                        &         omega_diff
+                        &         omega_prec
                         rhs(n_r_max)=omega_ic
                      else if ( kbotv == 2 .and. l_rot_ic ) then  ! time integration
                         rhs(n_r_max)=dom_ic
@@ -389,8 +389,8 @@ contains
                         end if
                      end if
 
-                     !-- Differential precession: equatorial rotation of the boundaries
-                     if ( l_diff_prec .and. l1 == 1 .and. m1 == 1 ) then
+                     !-- Precession in fluid frame: equatorial rotation of the boundaries
+                     if ( l_prec_fluid_frame .and. l1 == 1 .and. m1 == 1 ) then
                         if ( ktopv == 2 ) then
                            rhs1(1,2*lmB-1,threadid)=real(z11_ma)
                            rhs1(1,2*lmB,threadid)  =aimag(z11_ma)
@@ -535,8 +535,8 @@ contains
          prec_fac=0.0_cp
       end if
 
-      if ( l_diff_prec ) then
-         call get_z11_diff_prec(time, z11_ma, z11_ic)
+      if ( l_prec_fluid_frame ) then
+         call get_z11_prec(time, z11_ma, z11_ic)
       else
          z11_ma = zero
          z11_ic = zero
@@ -585,7 +585,7 @@ contains
          if ( l1m1 >= lm_start .and. l1m1 <= lm_stop ) then
             do nR=nRstart,nRstop
                z_ghost(l1m1,nR)=z_ghost(l1m1,nR)+tscheme%wimp_lin(1)*prec_fac* &
-               &                cmplx(sin(oek*time),cos(oek*time),cp)
+               &                cmplx(sin(oek*time),-cos(oek*time),cp)
             end do
          end if
       end if
@@ -612,7 +612,7 @@ contains
                   tOmega_ma2=time+tShift_ma2
                   omega_ma= omega_ma1*cos(omegaOsz_ma1*tOmega_ma1) + &
                   &         omega_ma2*cos(omegaOsz_ma2*tOmega_ma2) + &
-                  &         omega_diff
+                  &         omega_prec
                   z10_ghost(nR)=omega_ma
                else if ( ktopv == 2 .and. l_rot_ma ) then  ! time integration
                   z10_ghost(nR)=dom_ma!/c_dt_z10_ma
@@ -628,7 +628,7 @@ contains
                &                    amp_mode_ma*sin(omega_mode_ma*time),cp)
             end if
 
-            if ( l_diff_prec .and. l==1 .and. m==1 .and. ktopv==2 ) z_ghost(lm,nR)=z11_ma
+            if ( l_prec_fluid_frame .and. l==1 .and. m==1 .and. ktopv==2 ) z_ghost(lm,nR)=z11_ma
 
             z_ghost(lm,nR-1)=zero ! Set ghost zone to zero
          end do
@@ -650,7 +650,7 @@ contains
                      tOmega_ic2=time+tShift_ic2
                      omega_ic= omega_ic1*cos(omegaOsz_ic1*tOmega_ic1) + &
                      &         omega_ic2*cos(omegaOsz_ic2*tOmega_ic2) + &
-                     &         omega_diff
+                     &         omega_prec
                      z10_ghost(nR)=omega_ic
                   else if ( kbotv == 2 .and. l_rot_ic ) then  ! time integration
                      z10_ghost(nR)=dom_ic!/c_dt_z10_ic
@@ -670,7 +670,7 @@ contains
                &                    amp_mode_ic*sin(omega_mode_ic*time),cp)
             end if
 
-            if ( l_diff_prec .and. l==1 .and. m==1 .and. kbotv==2 .and. &
+            if ( l_prec_fluid_frame .and. l==1 .and. m==1 .and. kbotv==2 .and. &
             &    (.not. l_full_sphere) ) z_ghost(lm,nR)=z11_ic
 
             z_ghost(lm,nR+1)=zero ! Set ghost zone to zero
@@ -1340,7 +1340,7 @@ contains
       end if
       l1m0       =lm2(1,0)
 
-      if ( amp_mode_ic /= 0.0_cp .or. amp_mode_ma /= 0.0_cp .or. l_diff_prec ) then
+      if ( amp_mode_ic /= 0.0_cp .or. amp_mode_ma /= 0.0_cp .or. l_prec_fluid_frame ) then
          call abortRun('Not implemented yet in assembly stage of z')
       end if
 
@@ -1495,7 +1495,7 @@ contains
       real(cp) :: dLh, dom_ma, dom_ic, r2
 
       call tscheme%assemble_imex(work_Rloc, dzdt)
-      if ( amp_mode_ic /= 0.0_cp .or. amp_mode_ma /= 0.0_cp .or. l_diff_prec ) then
+      if ( amp_mode_ic /= 0.0_cp .or. amp_mode_ma /= 0.0_cp .or. l_prec_fluid_frame ) then
          call abortRun('Not implemented yet in assembly stage of z')
       end if
 
@@ -1693,13 +1693,13 @@ contains
 
    end subroutine update_rot_rates_Rloc
 !------------------------------------------------------------------------------
-   subroutine get_z11_diff_prec(time, z11_ma, z11_ic)
+   subroutine get_z11_prec(time, z11_ma, z11_ic)
       !
-      ! Boundary values of z(l=1,m=1) for differential precession: the mantle
-      ! and inner core rotate about an axis tilted by diff_prec_angle from z.
-      ! This axis precesses about z at po_diff*oek in the inertial frame, so in
+      ! Boundary values of z(l=1,m=1) for precession in the fluid frame: the
+      ! mantle and inner core rotate about an axis tilted by prec_angle from z.
+      ! This axis precesses about z at po*oek in the inertial frame, so in
       ! the frame rotating at oek about z its equatorial component turns at
-      ! (po_diff-1)*oek.
+      ! (po-1)*oek.
       !
 
       !-- Input variable
@@ -1711,13 +1711,13 @@ contains
       !-- Local variables
       real(cp) :: om_eq, phase
 
-      om_eq = oek*sin(diff_prec_angle)
-      phase = (po_diff-one)*oek*time
+      om_eq = oek*sin(prec_angle)
+      phase = (po-one)*oek*time
 
       z11_ma = om_eq/c_z11_omega_ma*cmplx(cos(phase),-sin(phase),kind=cp)
       z11_ic = om_eq/c_z11_omega_ic*cmplx(cos(phase),-sin(phase),kind=cp)
 
-   end subroutine get_z11_diff_prec
+   end subroutine get_z11_prec
 !------------------------------------------------------------------------------
    subroutine finish_exp_tor(omega_ma, omega_ic, lorentz_torque_ma, &
               &              lorentz_torque_ic, domega_ma_dt_exp, domega_ic_dt_exp)

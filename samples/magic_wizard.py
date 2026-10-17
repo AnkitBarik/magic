@@ -9,6 +9,7 @@ import testOutputs.unitTest
 import testRadialOutputs.unitTest
 import boussBenchSat.unitTest
 import precession.unitTest
+import precession_fluid_frame.unitTest
 import dynamo_benchmark.unitTest
 import full_sphere.unitTest
 import varProps.unitTest
@@ -268,6 +269,12 @@ def getSuite(startdir, cmd, precision, args):
         suite.addTest(precession.unitTest.PrecessionTest(
                                          'outputFileDiff',
                                          '{}/precession'.format(startdir),
+                                         execCmd=cmd,
+                                         precision=precision))
+        # Precession in the fluid frame with Po=-0.01
+        suite.addTest(precession_fluid_frame.unitTest.PrecessionFluidFrameTest(
+                                         'outputFileDiff',
+                                         '{}/precession_fluid_frame'.format(startdir),
                                          execCmd=cmd,
                                          precision=precision))
         # First full sphere benchmark from Marti et al. (2014)

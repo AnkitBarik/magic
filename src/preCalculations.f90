@@ -16,14 +16,14 @@ module preCalculations
    use init_fields, only: bots, tops, s_bot, s_top, n_s_bounds,    &
        &                  l_reset_t, topxi, botxi, xi_bot, xi_top, &
        &                  n_xi_bounds, omega_ma1, omegaOsz_ma1,    &
-       &                  omega_ic1, omegaOsz_ic1, omega_diff
+       &                  omega_ic1, omegaOsz_ic1, omega_prec
    use parallel_mod, only: rank, n_procs, rank_with_r_LCR
    use logic, only: l_mag, l_cond_ic, l_non_rot, l_mag_LF, l_newmap,     &
        &            l_anel, l_heat, l_anelastic_liquid,                  &
        &            l_cmb_field, l_save_out, l_TO, l_TOmovie, l_r_field, &
        &            l_movie, l_LCR, l_dt_cmb_field, l_non_adia,          &
        &            l_temperature_diff, l_chemical_conv, l_probe,        &
-       &            l_precession, l_finite_diff, l_full_sphere, l_diff_prec
+       &            l_precession, l_finite_diff, l_full_sphere, l_prec_fluid_frame
    use radial_data, only: radial_balance
    use radial_functions, only: rscheme_oc, temp0, r_CMB, ogrun,            &
        &                       r_surface, visc, or2, r, r_ICB, dLtemp0,    &
@@ -39,7 +39,7 @@ module preCalculations
        &                          ktops, kbots, interior_model, r_LCR,     &
        &                          n_r_LCR, mode, tmagcon, oek, Bn, imagcon,&
        &                          ktopxi, kbotxi, epscxi, epscxi0, sc, osc,&
-       &                          ChemFac, raxi, Po, prec_angle, diff_prec_angle
+       &                          ChemFac, raxi, Po, prec_angle
    use horizontal_data, only: horizontal
    use integration, only: rInt_R
    use useful, only: logWrite, abortRun
@@ -309,11 +309,14 @@ contains
          delxr2(n_r)=delmin*delmin
       end do
 
-      !-- Differential precession of mantle and outer core
-      if ( l_diff_prec ) then
-         omega_diff = oek * (cos(diff_prec_angle) - one)
+      !-- Precession in the fluid frame: the frame rotates at oek about the
+      !-- precession axis z, while mantle and inner core rotate at
+      !-- oek*(k_m+po*z), with k_m tilted by prec_angle from z.
+      !-- omega_prec is the z-component of their rotation relative to the frame.
+      if ( l_prec_fluid_frame ) then
+         omega_prec = oek * (cos(prec_angle) - one + po)
       else
-         omega_diff = 0.0_cp
+         omega_prec = 0.0_cp
       end if
 
       !-- Constants used for rotating core or mantle:

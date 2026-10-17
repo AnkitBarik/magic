@@ -18,7 +18,8 @@ module init_fields
        &                      phi, cosTheta, hdif_B
    use logic, only: l_rot_ic, l_rot_ma, l_SRIC, l_SRMA, l_cond_ic,  &
        &            l_temperature_diff, l_chemical_conv, l_onset,   &
-       &            l_anelastic_liquid, l_non_adia, l_finite_diff
+       &            l_anelastic_liquid, l_non_adia, l_finite_diff,  &
+       &            l_prec_fluid_frame
    use radial_functions, only: r_icb, r, r_cmb, r_ic, or1, jVarCon,    &
        &                       lambda, or2, dLlambda, or3, cheb_ic,    &
        &                       dcheb_ic, d2cheb_ic, cheb_norm_ic, or1, &
@@ -28,7 +29,7 @@ module init_fields
        &                       rho0, dLalpha0, alpha0, otemp1, ogrun,  &
        &                       rscheme_oc, or1, O_r_ic
    use radial_data, only: n_r_icb, n_r_cmb, nRstart, nRstop
-   use constants, only: pi, y10_norm, c_z10_omega_ic, c_z10_omega_ma, osq4pi, &
+   use constants, only: pi, y10_norm, y11_norm, c_z10_omega_ic, c_z10_omega_ma, osq4pi, &
        &                zero, one, two, three, four, third, half, sq4pi
    use useful, only: abortRun, lagrange_interp
    use sht, only: scal_to_SH, scal_to_spat
@@ -39,6 +40,7 @@ module init_fields
        &                          impXi, n_impXi_max, n_impXi, phiXi,     &
        &                          thetaXi, peakXi, widthXi, osc, epscxi,  &
        &                          kbotxi, ktopxi, BuoFac, ktopp, oek,     &
+       &                          prec_angle,                             &
        &                          epsPhase
    use special, only: ampForce
    use algebra, only: prepare_mat, solve_mat
@@ -88,7 +90,7 @@ module init_fields
    real(cp), public :: omega_ma2,omegaOsz_ma2,tShift_ma2,tOmega_ma2
    real(cp), public :: omega_ic1,omegaOsz_ic1,tShift_ic1,tOmega_ic1
    real(cp), public :: omega_ic2,omegaOsz_ic2,tShift_ic2,tOmega_ic2
-   real(cp), public :: omega_diff ! z-rotation offset due to differential precession
+   real(cp), public :: omega_prec ! z-rotation offset due to precession in fluid frame
 
    !----- About start-file:
    logical, public :: l_start_file     ! taking fields from startfile ?
@@ -156,7 +158,7 @@ contains
 
       !-- Local variables
       complex(cp) :: z_Rloc(lm_max,nRstart:nRstop)
-      integer :: lm,l,m,l1m0
+      integer :: lm,l,m,l1m0,l1m1
       integer :: nR,nTheta,nPhi
       real(cp) :: ra1,ra2,c_r,c_i
       real(cp) :: amp_r,rExp
@@ -333,7 +335,7 @@ contains
 
             if ( l_SRIC .or. l_rot_ic .and. omega_ic1 /= 0.0_cp ) then
                omega_ic=omega_ic1*cos(omegaOsz_ic1*tShift_ic1) + &
-               &        omega_ic2*cos(omegaOsz_ic2*tShift_ic2) + omega_diff
+               &        omega_ic2*cos(omegaOsz_ic2*tShift_ic2) + omega_prec
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed inner core rotation rate:'
                write(output_unit,*) '! omega_ic=',omega_ic
@@ -345,7 +347,7 @@ contains
             end if
             if ( l_SRMA .or. l_rot_ma .and. omega_ma1 /= 0.0_cp ) then
                omega_ma=omega_ma1*cos(omegaOsz_ma1*tShift_ma1) + &
-               &        omega_ma2*cos(omegaOsz_ma2*tShift_ma2) + omega_diff
+               &        omega_ma2*cos(omegaOsz_ma2*tShift_ma2) + omega_prec
 
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed mantle rotation rate:'
@@ -356,6 +358,23 @@ contains
             else
                omega_ma=0.0_cp
             end if
+
+            !-- Precession in the fluid frame: start with the fluid co-rotating
+            !-- with mantle and inner core (equivalent to a fluid at rest in
+            !-- the mantle frame)
+            if ( l_prec_fluid_frame ) then
+               do nR=1,n_r_max
+                  z(l1m0,nR)=cmplx(omega_prec*r(nR)*r(nR)*rho0(nR)/y10_norm,0.0_cp,kind=cp)
+               end do
+            end if
+         end if
+
+         l1m1 = lo_map%lm2(1,1)
+         if ( l_prec_fluid_frame .and. (l1m1>=llm) .and. (l1m1<=ulm) ) then
+            do nR=1,n_r_max
+               z(l1m1,nR)=cmplx(oek*sin(prec_angle)*r(nR)*r(nR)*rho0(nR)/ &
+               &                (two*y11_norm),0.0_cp,kind=cp)
+            end do
          end if
 
 #ifdef WITH_MPI
@@ -365,8 +384,8 @@ contains
          end if
 #endif
       else
-         if ( nRotIc == 2 ) omega_ic=omega_ic1 + omega_diff
-         if ( nRotMa == 2 ) omega_ma=omega_ma1 + omega_diff
+         if ( nRotIc == 2 ) omega_ic=omega_ic1 + omega_prec
+         if ( nRotMa == 2 ) omega_ma=omega_ma1 + omega_prec
       end if
 
    end subroutine initV

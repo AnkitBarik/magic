@@ -7,12 +7,12 @@ module nonlinear_bcs
    use radial_data, only: n_r_cmb, n_r_icb
    use radial_functions, only: r_cmb, r_icb, rho0
    use physical_parameters, only: sigma_ratio, conductance_ma, prmag, oek, &
-       &                          po_diff, diff_prec_angle
+       &                          po, prec_angle
    use horizontal_data, only: cosTheta, sinTheta_E2, phi, sinTheta, O_sin_theta
    use constants, only: one, two, y10_norm, y11_norm, zero
    use useful, only: abortRun
    use special, only: l_vr_cmb, l_vr_icb
-   use logic, only: l_diff_prec
+   use logic, only: l_prec_fluid_frame
    use sht, only: spat_to_sphertor
 
    implicit none
@@ -127,10 +127,10 @@ contains
       !  While ``vt`` is zero, since we only allow for rotation about the
       !  :math:`z`-axis, ``vp= r \sin(theta) v_phi = r**2 sin(theta)**2 omega``
       !  and ``cvr= r**2 * radial component of (\curl v) = r**2  2 cos(theta) omega``
-      !  During differential precession, the boundary also rotates about an
+      !  For precession in the fluid frame, the boundary also rotates about an
       !  equatorial axis (omx, omy) and ``vt`` is non-zero. The equatorial
-      !  axis turns at the inertial precession rate po_diff*oek minus the
-      !  frame rotation rate oek, i.e. at (po_diff-1)*oek.
+      !  axis turns at the inertial precession rate po*oek minus the
+      !  frame rotation rate oek, i.e. at (po-1)*oek.
       !
 
       !-- Input of variables:
@@ -139,7 +139,7 @@ contains
 
       !-- Input of boundary rotation rate
       real(cp), intent(in) :: omega         ! boundary rotation rate
-      real(cp), intent(in) :: time          ! time (differential precession phase)
+      real(cp), intent(in) :: time          ! time (phase of precession in fluid frame)
 
       !-- output:
       real(cp), intent(out) :: vrr(:,:), vpr(:,:), vtr(:,:)
@@ -165,9 +165,9 @@ contains
          return
       end if
 
-      if ( l_diff_prec ) then
-         omx = oek * sin(diff_prec_angle) * cos((po_diff-one) * oek * time)
-         omy = oek * sin(diff_prec_angle) * sin((po_diff-one) * oek * time)
+      if ( l_prec_fluid_frame ) then
+         omx = oek * sin(prec_angle) * cos((po-one) * oek * time)
+         omy = oek * sin(prec_angle) * sin((po-one) * oek * time)
       else
          omx = 0.0_cp
          omy = 0.0_cp

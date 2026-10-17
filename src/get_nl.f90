@@ -31,7 +31,7 @@ module grid_space_arrays_mod
    use constants, only: two, third, one
    use logic, only: l_conv_nl, l_heat_nl, l_mag_nl, l_anel, l_mag_LF, l_adv_curl, &
        &            l_chemical_conv, l_precession, l_centrifuge, l_phase_field, &
-       &            l_diff_prec
+       &            l_prec_fluid_frame
 
    implicit none
 
@@ -394,9 +394,9 @@ contains
                this%VxBp(:,nPhi)=-or4(nR)*orho1(nR)*this%vtc(:,nPhi)*this%brc(:,nPhi)
             else if ( nBc == 2 ) then  ! rigid boundary :
                !-- Only vp /= 0 at boundary allowed (rotation of boundaries about z-axis):
-               !-- During differential precession, vt /= 0 too.
+               !-- For precession in the fluid frame, vt /= 0 too.
                this%VxBt(:,nPhi)=or4(nR)*orho1(nR)*this%vpc(:,nPhi)*this%brc(:,nPhi)
-               if ( l_diff_prec ) then
+               if ( l_prec_fluid_frame ) then
                   this%VxBp(:,nPhi)=-or4(nR)*orho1(nR)*this%vtc(:,nPhi)*this%brc(:,nPhi)
                else
                   this%VxBp(:,nPhi)= 0.0_cp
