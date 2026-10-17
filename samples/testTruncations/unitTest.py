@@ -1,4 +1,3 @@
-from __future__ import print_function
 import unittest
 import numpy as np
 import glob
@@ -8,24 +7,24 @@ import shutil
 import subprocess as sp
 
 def cleanDir(dir):
-    if os.path.exists('%s/pscond.dat' % dir):
-        os.remove('%s/pscond.dat' % dir)
-    if os.path.exists('%s/scond.dat' % dir):
-        os.remove('%s/scond.dat' % dir)
-    if os.path.exists('%s/run_magic.sh' % dir):
-        os.remove('%s/run_magic.sh' % dir)
-    if os.path.exists('%s/run_magic_mpi.sh' % dir):
-        os.remove('%s/run_magic_mpi.sh' % dir)
-    for f in glob.glob('%s/*_BIS' % dir):
+    if os.path.exists('{}/pscond.dat'.format(dir)):
+        os.remove('{}/pscond.dat'.format(dir))
+    if os.path.exists('{}/scond.dat'.format(dir)):
+        os.remove('{}/scond.dat'.format(dir))
+    if os.path.exists('{}/run_magic.sh'.format(dir)):
+        os.remove('{}/run_magic.sh'.format(dir))
+    if os.path.exists('{}/run_magic_mpi.sh'.format(dir)):
+        os.remove('{}/run_magic_mpi.sh'.format(dir))
+    for f in glob.glob('{}/*_BIS'.format(dir)):
         os.remove(f)
-    for f in glob.glob('%s/*.test' % dir):
+    for f in glob.glob('{}/*.test'.format(dir)):
         os.remove(f)
-    if os.path.exists('%s/stdout.out' % dir):
-        os.remove('%s/stdout.out' % dir)
-    for f in glob.glob('%s/*.pyc' % dir):
+    if os.path.exists('{}/stdout.out'.format(dir)):
+        os.remove('{}/stdout.out'.format(dir))
+    for f in glob.glob('{}/*.pyc'.format(dir)):
         os.remove(f)
-    if os.path.exists('%s/__pycache__' % dir):
-        shutil.rmtree('%s/__pycache__' % dir)
+    if os.path.exists('{}/__pycache__'.format(dir)):
+        shutil.rmtree('{}/__pycache__'.format(dir))
 
 def readStack(file):
     f = open(file, 'r')
@@ -33,7 +32,7 @@ def readStack(file):
     out = np.array([])
     for line in f.readlines():
         cut = line.split()
-        dat = np.asarray(cut, dtype='Float64')
+        dat = np.asarray(cut, dtype=np.float64)
         #out.append(dat)
         out = np.append(out, dat)
     return out
@@ -61,8 +60,8 @@ class TestTruncations(unittest.TestCase):
 
     def setUp(self):
         # Cleaning when entering
-        print('\nDirectory   :           %s' % self.dir)
-        print('Description :           %s' % self.description)
+        print('\nDirectory   :           {}'.format(self.dir))
+        print('Description :           {}'.format(self.description))
         self.startTime = time.time()
         cleanDir(self.dir)
         os.chdir(self.dir)
@@ -73,34 +72,34 @@ class TestTruncations(unittest.TestCase):
                  1, 4, 1, 4, 1, 4, 4, 4]
         str = "cat "
         for k, tag in enumerate(self.tags):
-            cmd = "sed -i 's/tag.*/tag         ="+'"%s"'%tag+",/g' input.nml"
+            cmd = "sed -i 's/tag.*/tag         ="+'"{}"'.format(tag)+",/g' input.nml"
             sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
-            cmd = "sed -i 's/n_phi_tot.*/n_phi_tot   =%i,/g' input.nml" % nphis[k]
+            cmd = "sed -i 's/n_phi_tot.*/n_phi_tot   ={:d},/g' input.nml".format(nphis[k])
             sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
-            cmd = "sed -i 's/minc.*/minc        =%i,/g' input.nml" % mincs[k]
+            cmd = "sed -i 's/minc.*/minc        ={:d},/g' input.nml".format(mincs[k])
             sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
 
             # Run MagIC
-            cmd = '%s %s/input.nml' % (self.execCmd, self.dir)
+            cmd = '{} {}/input.nml'.format(self.execCmd, self.dir)
             sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'),
                     stderr=open(os.devnull, 'wb'))
 
             # Concatenate e_kin files
-            str += 'e_kin.%s ' % tag
-            cmd = "cat e_kin.%s >> e_kin.test" % tag
+            str += 'e_kin.{} '.format(tag)
+            cmd = "cat e_kin.{} >> e_kin.test".format(tag)
         cmd = str+ '> e_kin.test'
         sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
 
     def tearDown(self):
         # Clean up
         for tag in self.tags:
-            for f in glob.glob('%s/*.%s' % (self.dir, tag)):
+            for f in glob.glob('{}/*.{}'.format(self.dir, tag)):
                 os.remove(f)
 
         # Restore initial values in the namelist
-        cmd = "sed -i 's/tag.*/tag         ="+'"test96"'+",/g' input.nml"
+        cmd = "sed -i 's/tag.*/tag         ="+'"test288"'+",/g' input.nml"
         sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
-        cmd = "sed -i 's/n_phi_tot.*/n_phi_tot   =96,/g' input.nml"
+        cmd = "sed -i 's/n_phi_tot.*/n_phi_tot   =288,/g' input.nml"
         sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
         cmd = "sed -i 's/minc.*/minc        =1,/g' input.nml"
         sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'))
@@ -111,11 +110,14 @@ class TestTruncations(unittest.TestCase):
 
         t = time.time()-self.startTime
         st = time.strftime("%M:%S", time.gmtime(t))
-        print('Time used   :                            %s' % st)
+        print('Time used   :                            {}'.format(st))
 
         if hasattr(self, '_outcome'): # python 3.4+
-            result = self.defaultTestResult()
-            self._feedErrorsToResult(result, self._outcome.errors)
+            if hasattr(self._outcome, 'errors'):  # python 3.4-3.10
+                result = self.defaultTestResult()
+                self._feedErrorsToResult(result, self._outcome.errors)
+            else:  # python 3.11+
+                result = self._outcome.result
         else:  # python 2.7-3.3
             result = getattr(self, '_outcomeForDoCleanups', 
                              self._resultForDoCleanups)
@@ -137,6 +139,6 @@ class TestTruncations(unittest.TestCase):
                 print(result.failures[-1][-1])
 
     def outputFileDiff(self):
-        datRef = readStack('%s/reference.out' % self.dir)
-        datTmp = readStack('%s/e_kin.test' % self.dir)
+        datRef = readStack('{}/reference.out'.format(self.dir))
+        datTmp = readStack('{}/e_kin.test'.format(self.dir))
         np.testing.assert_allclose(datRef, datTmp, rtol=self.precision, atol=1e-20)

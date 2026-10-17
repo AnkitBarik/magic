@@ -4,15 +4,18 @@ module radial_functions
    !  temperature, cheb transforms, etc.)
    !
 
-   use truncation, only: n_r_max, n_cheb_max, n_r_ic_max, fd_ratio, &
-       &                 fd_stretch, fd_order, fd_order_bound
+   use iso_fortran_env, only: output_unit
+   use truncation, only: n_r_max, n_cheb_max, n_r_ic_max, fd_ratio, rcut_l, &
+       &                 fd_stretch, fd_order, fd_order_bound, l_max, n_cheb_ic_max
    use algebra, only: prepare_mat, solve_mat
-   use constants, only: sq4pi, one, two, three, four, half
+   use constants, only: sq4pi, one, two, three, four, half, pi
    use physical_parameters
    use logic, only: l_mag, l_cond_ic, l_heat, l_anelastic_liquid,  &
        &            l_isothermal, l_anel, l_non_adia, l_centrifuge,&
-       &            l_temperature_diff, l_single_matrix,           &
-       &            l_finite_diff, l_newmap
+       &            l_temperature_diff, l_single_matrix, l_var_l,  &
+       &            l_finite_diff, l_newmap, l_full_sphere,        &
+       &            l_chemical_conv
+   use radial_data, only: nRstart, nRstop
    use chebyshev_polynoms_mod ! Everything is needed
    use cosine_transform_odd
    use cosine_transform_even
@@ -45,7 +48,10 @@ module radial_functions
    real(cp), public, allocatable :: dLtemp0(:)   ! Inverse of temperature scale height
    real(cp), public, allocatable :: ddLtemp0(:)  ! :math:`d/dr(1/T dT/dr)`
    real(cp), private, allocatable :: d2temp0(:)  ! Second rad. derivative of background temperature
+   real(cp), public, allocatable :: scond(:)     ! Background entropy profile (conducting state)
    real(cp), public, allocatable :: dentropy0(:) ! Radial gradient of background entropy
+   real(cp), public, allocatable :: xicond(:)    ! Conducting state for chemical composition
+   real(cp), public, allocatable :: dxicond(:)   ! Radial gradient of chemical composition
    real(cp), public, allocatable :: orho1(:)     ! :math:`1/\tilde{\rho}`
    real(cp), public, allocatable :: orho2(:)     ! :math:`1/\tilde{\rho}^2`
    real(cp), public, allocatable :: beta(:)      ! Inverse of density scale height drho0/rho0
@@ -57,15 +63,12 @@ module radial_functions
    real(cp), public, allocatable :: ddLalpha0(:) ! :math:`d/dr(1/alpha d\alpha/dr)`
    real(cp), public, allocatable :: ogrun(:)     ! :math:`1/\Gamma`
 
-   real(cp), public, allocatable :: opressure0(:) ! Inverse background pressure (for centrifugal acceleration)
-
-
    real(cp), public :: dr_fac_ic                 ! For IC: :math:`2/(2 r_i)`
    real(cp), public :: alpha1   ! Input parameter for non-linear map to define degree of spacing (0.0:2.0)
    real(cp), public :: alpha2   ! Input parameter for non-linear map to define central point of different spacing (-1.0:1.0)
    real(cp), public :: r_cmb                     ! OC radius
    real(cp), public :: r_icb                     ! IC radius
-   real(cp), public :: r_surface                 ! Surface radius for extrapolation
+   real(cp), public :: r_surface                 ! Surface radius for extrapolation in units of (r_cmb-r_icb)
 
    !-- arrays for buoyancy, depend on Ra and Pr:
    real(cp), public, allocatable :: rgrav(:)     ! Buoyancy term `dtemp0/Di`
@@ -85,10 +88,9 @@ module radial_functions
    real(cp), public, allocatable :: dcheb_ic(:,:)        ! First radial derivative of cheb_ic
    real(cp), public, allocatable :: d2cheb_ic(:,:)       ! Second radial derivative cheb_ic
    real(cp), public, allocatable :: cheb_int_ic(:)       ! Array for integrals of cheb for IC
-   integer, public :: nDi_costf1_ic                      ! Radii for transform
-   integer, public :: nDd_costf1_ic                      ! Radii for transform
-   integer, public :: nDi_costf2_ic                      ! Radii for transform
-   integer, public :: nDd_costf2_ic                      ! Radii for transform
+   integer :: nDd_costf1_ic                      ! Radii for transform
+   integer :: nDi_costf2_ic                      ! Radii for transform
+   integer :: nDd_costf2_ic                      ! Radii for transform
 
    real(cp), public, allocatable :: lambda(:)     ! Array of magnetic diffusivity
    real(cp), public, allocatable :: dLlambda(:)   ! Derivative of magnetic diffusivity
@@ -101,13 +103,16 @@ module radial_functions
    real(cp), public, allocatable :: ddLvisc(:)    ! 2nd derivative of kinematic viscosity
    real(cp), public, allocatable :: divKtemp0(:)  ! Term for liquid anelastic approximation
    real(cp), public, allocatable :: epscProf(:)   ! Sources in heat equations
+   real(cp), public, allocatable :: dr_top_ic(:)  ! Derivative in real space for r=r_i
+
+   integer, public, allocatable :: l_R(:) ! Variable degree with radius
 
    public :: initialize_radial_functions, radial, transportProperties, &
    &         finalize_radial_functions
 
 contains
 
-   subroutine initialize_radial_functions
+   subroutine initialize_radial_functions()
       !
       ! Initial memory allocation
       !
@@ -122,35 +127,48 @@ contains
       allocate( or1(n_r_max),or2(n_r_max),or3(n_r_max),or4(n_r_max) )
       allocate( otemp1(n_r_max),rho0(n_r_max),temp0(n_r_max) )
       allocate( dLtemp0(n_r_max),d2temp0(n_r_max),dentropy0(n_r_max) )
-      allocate( ddLtemp0(n_r_max) )
+      allocate( scond(n_r_max),ddLtemp0(n_r_max) )
       allocate( orho1(n_r_max),orho2(n_r_max) )
       allocate( beta(n_r_max), dbeta(n_r_max), ddbeta(n_r_max) )
       allocate( alpha0(n_r_max), dLalpha0(n_r_max), ddLalpha0(n_r_max) )
       allocate( rgrav(n_r_max), ogrun(n_r_max) )
-      bytes_allocated = bytes_allocated+(22*n_r_max+3*n_r_ic_max)*SIZEOF_DEF_REAL
+      bytes_allocated = bytes_allocated+(23*n_r_max+3*n_r_ic_max)*SIZEOF_DEF_REAL
+
+      if ( l_chemical_conv ) then
+         allocate( xicond(n_r_max), dxicond(n_r_max) )
+         xicond(:) =0.0_cp
+         dxicond(:)=0.0_cp
+         bytes_allocated = bytes_allocated+2*n_r_max*SIZEOF_DEF_REAL
+      end if
 
       allocate( lambda(n_r_max),dLlambda(n_r_max),jVarCon(n_r_max) )
-      allocate( sigma(n_r_max) )
-      allocate( kappa(n_r_max),dLkappa(n_r_max) )
+      allocate( sigma(n_r_max),kappa(n_r_max),dLkappa(n_r_max) )
       allocate( visc(n_r_max),dLvisc(n_r_max),ddLvisc(n_r_max) )
       allocate( epscProf(n_r_max),divKtemp0(n_r_max) )
-      allocate( opressure0(n_r_max) )
-
       bytes_allocated = bytes_allocated + 11*n_r_max*SIZEOF_DEF_REAL
 
-      nDi_costf1_ic=2*n_r_ic_max+2
-      nDd_costf1_ic=2*n_r_ic_max+5
-      nDi_costf2_ic=2*n_r_ic_max
-      nDd_costf2_ic=2*n_r_ic_max+n_r_ic_max/2+5
+      !allocate ( l_R(nRstart:nRstop) )
+      !bytes_allocated = bytes_allocated +(nRstop-nRstart+1)*SIZEOF_INTEGER
+      allocate ( l_R(1:n_r_max) )
+      bytes_allocated = bytes_allocated +n_r_max*SIZEOF_INTEGER
 
-      allocate( cheb_ic(n_r_ic_max,n_r_ic_max) )
-      allocate( dcheb_ic(n_r_ic_max,n_r_ic_max) )
-      allocate( d2cheb_ic(n_r_ic_max,n_r_ic_max) )
-      allocate( cheb_int_ic(n_r_ic_max) )
-      bytes_allocated = bytes_allocated + &
-      &                 (3*n_r_ic_max*n_r_ic_max+n_r_ic_max)*SIZEOF_DEF_REAL
+      if ( .not. l_full_sphere ) then
+         nDd_costf1_ic=2*n_r_ic_max+5
+         nDi_costf2_ic=2*n_r_ic_max
+         nDd_costf2_ic=2*n_r_ic_max+n_r_ic_max/2+5
 
-      call chebt_ic%initialize(n_r_ic_max,nDi_costf1_ic,nDd_costf1_ic)
+         allocate( cheb_ic(n_r_ic_max,n_r_ic_max) )
+         allocate( dcheb_ic(n_r_ic_max,n_r_ic_max) )
+         allocate( d2cheb_ic(n_r_ic_max,n_r_ic_max) )
+         allocate( cheb_int_ic(n_r_ic_max) )
+         bytes_allocated = bytes_allocated + &
+         &                 (3*n_r_ic_max*n_r_ic_max+n_r_ic_max)*SIZEOF_DEF_REAL
+
+         call chebt_ic%initialize(n_r_ic_max,n_cheb_ic_max,nDd_costf1_ic)
+
+         allocate ( dr_top_ic(n_r_ic_max) )
+         bytes_allocated = bytes_allocated+n_r_ic_max*SIZEOF_DEF_REAL
+      end if
 
       if ( .not. l_finite_diff ) then
 
@@ -178,62 +196,59 @@ contains
 
    end subroutine initialize_radial_functions
 !------------------------------------------------------------------------------
-   subroutine finalize_radial_functions
+   subroutine finalize_radial_functions()
+      !
+      ! Memory deallocation of radial functions
+      !
 
+      deallocate( l_R )
       deallocate( r, r_ic, O_r_ic, O_r_ic2, or1, or2, or3, or4 )
       deallocate( otemp1, rho0, temp0, dLtemp0, d2temp0, dentropy0 )
       deallocate( ddLtemp0, orho1, orho2, beta, dbeta, ddbeta, alpha0 )
-      deallocate( ddLalpha0, dLalpha0, rgrav, ogrun )
+      deallocate( ddLalpha0, dLalpha0, rgrav, ogrun, scond )
       deallocate( lambda, dLlambda, jVarCon, sigma, kappa, dLkappa )
       deallocate( visc, dLvisc, ddLvisc, epscProf, divKtemp0 )
-      deallocate( opressure0 )
 
-      deallocate( cheb_ic, dcheb_ic, d2cheb_ic, cheb_int_ic )
-      call chebt_ic%finalize()
-      if ( n_r_ic_max > 0 .and. l_cond_ic ) call chebt_ic_even%finalize()
+      if ( l_chemical_conv ) deallocate(xicond, dxicond)
 
-      if ( .not. l_finite_diff ) then
-         deallocate( cheb_int )
+      if ( .not. l_full_sphere ) then
+         deallocate( dr_top_ic )
+         deallocate( cheb_ic, dcheb_ic, d2cheb_ic, cheb_int_ic )
+         call chebt_ic%finalize()
+         if ( n_r_ic_max > 0 .and. l_cond_ic ) call chebt_ic_even%finalize()
       end if
+
+      if ( .not. l_finite_diff ) deallocate( cheb_int )
 
       call rscheme_oc%finalize()
 
    end subroutine finalize_radial_functions
 !------------------------------------------------------------------------------
-   subroutine radial
+   subroutine radial()
       !
       !  Calculates everything needed for radial functions, transforms etc.
       !
 
       !-- Local variables:
       integer :: n_r,n_cheb,n_cheb_int
-      integer :: n_r_ic_tot, k, i
-      integer :: n_const(1)
-
-      !integer :: n_r_start
-      real(cp) :: fac_int
+      integer :: n_r_ic_tot, i
+      real(cp) :: fac_int, fac
       real(cp) :: r_cheb_ic(2*n_r_ic_max-1),r_ic_2(2*n_r_ic_max-1)
       real(cp) :: drho0(n_r_max),dtemp0(n_r_max)
-
-      real(cp) :: hcomp,fac
-      real(cp) :: dtemp0cond(n_r_max),dtemp0ad(n_r_max),hcond(n_r_max)
-      real(cp) :: func(n_r_max)
-
       real(cp), allocatable :: coeffDens(:), coeffTemp(:), coeffAlpha(:)
+      real(cp), allocatable :: coeffGrav(:), coeffGrun(:)
       real(cp) :: rrOcmb(n_r_max)
+      real(cp) :: dr_top(2*n_r_ic_max-1)
       character(len=80) :: message
       character(len=76) :: fileName
       integer :: fileHandle
-
-      real(cp) :: ratio1, ratio2
-
+      real(cp) :: ratio1, ratio2, diff, coeff
 
       !-- Radial grid point:
       !   radratio is aspect ratio
       !   radratio = (inner core r) / (CMB r) = r_icb/r_cmb
       r_cmb=one/(one-radratio)
       r_icb=r_cmb-one
-      r_surface=2.8209_cp    ! in units of (r_cmb-r_icb)
 
       if ( .not. l_finite_diff ) then
          ratio1=alph1
@@ -255,13 +270,45 @@ contains
          close(fileHandle)
       end if
 
-      or1=one/r         ! 1/r
-      or2=or1*or1       ! 1/r**2
-      or3=or1*or2       ! 1/r**3
-      or4=or2*or2       ! 1/r**4
+      if ( l_full_sphere ) then
+         or1(:n_r_max-1)=one/r(:n_r_max-1)       ! 1/r
+         or2(:n_r_max-1)=or1(:n_r_max-1)*or1(:n_r_max-1)  ! 1/r**2
+         or3(:n_r_max-1)=or1(:n_r_max-1)*or2(:n_r_max-1)  ! 1/r**3
+         or4(:n_r_max-1)=or2(:n_r_max-1)*or2(:n_r_max-1)  ! 1/r**4
+         or1(n_r_max)=0.0_cp
+         or2(n_r_max)=0.0_cp
+         or3(n_r_max)=0.0_cp
+         or4(n_r_max)=0.0_cp
+      else
+         or1(:)=one/r(:)       ! 1/r
+         or2(:)=or1(:)*or1(:)  ! 1/r**2
+         or3(:)=or1(:)*or2(:)  ! 1/r**3
+         or4(:)=or2(:)*or2(:)  ! 1/r**4
+      end if
+
+      !-- Determine the max. degree for each radial level
+      if ( l_var_l ) then ! Nat's form from Marti et al. (2014)
+         !l_R(:) = int(one+(l_max-one)*sqrt(r(nRstart:nRstop)/r_cmb))
+         !l_R(:) = int(one+(l_max-one)*sqrt(r(:)/r_cmb))
+         l_R(:) = int(one+l_max*sqrt(r(:)/r_cmb/rcut_l))
+         do n_r=1,n_r_max
+            if ( l_R(n_r) > l_max ) l_R(n_r)=l_max
+         end do
+         call logWrite('! Spherical harmonic degree varies with radius')
+         call logWrite('! It increases between l_min and l_max following:')
+         write(message,'(''!   l_min ='',i5, '' at r ='', f7.4)') minval(l_R(:)), &
+         &     r(minloc(l_R(:),dim=1))
+         call logWrite(message)
+         write(message,'(''!   l_max ='',i5, '' at r ='', f7.4)') maxval(l_R(:)), &
+         &     r(maxloc(l_R(:),dim=1))
+         call logWrite(message)
+         call logWrite('')
+      else ! Default is constant l
+         l_R(:) = l_max
+      end if
 
       !-- Get entropy gradient
-      call getEntropyGradient ! By default this is zero
+      call getEntropyGradient() ! By default this is zero
 
       !-- Fit to an interior model
       if ( index(interior_model,'JUP') /= 0 ) then
@@ -343,26 +390,104 @@ contains
 
       else if ( index(interior_model,'SAT') /= 0 ) then
 
-         ! the shell can't be thicker than eta=0.15, because the fit doesn't
-         ! work below that (in Nadine's profile, that's where the IC is anyway)
-         ! also r_cut_model maximum is 0.999, because rho is negative beyond
-         ! that
+         ! the shell can't be thinner than eta=0.38947 and r_cut_model <= 0.95, because
+         ! the fits don't work beyond that. The Preising et al. 2023 model
+         ! includes a region of strong ! Helium concentration at the
+         ! bottom which is probably stably stratified and has
+         ! been cut out from this fit.
 
-         allocate( coeffDens(4), coeffTemp(9) )
-         coeffDens = [-0.33233543_cp, 0.90904075_cp, -0.9265371_cp, &
-         &            0.34973134_cp ]
+         if (l_non_adia) then
+            rrOcmb(:) = r(:)*r_cut_model/r_cmb
+            allocate(coeffTemp(8),coeffDens(6),coeffGrav(5),coeffAlpha(8))
 
-         coeffTemp = [1.00294605_cp,-0.44357815_cp,13.9295826_cp,  &
-         &            -137.051347_cp,521.181670_cp,-1044.41528_cp, &
-         &            1166.04926_cp,-683.198387_cp, 162.962632_cp ]
+            coeffTemp= [ -77880.376328818_cp, 1089237.928095523_cp,    &
+            &           -5718555.197998112_cp, 16027297.768664116_cp,  &
+            &           -26159709.956658602_cp, 24913613.036177561_cp, &
+            &           -12819667.849508610_cp, 2746322.598433222_cp ]
+            coeffDens= [ 8.813043492_cp, -51.578717073_cp, 145.416402036_cp, &
+            &           -211.845381533_cp, 152.131339032_cp, -42.964602602_cp]
+            coeffGrav= [ 115.392383256_cp, -483.892696422_cp, 935.515330783_cp,&
+            &           -826.605750144_cp, 270.984339687_cp ]
+            coeffAlpha= [ -871.964023446_cp, 10634.774082757_cp, -55010.331729823_cp,   &
+            &            154178.756043949_cp, -252573.849597133_cp, 241773.428704681_cp,&
+            &            -125275.544905827_cp, 27136.257157590_cp ]
 
-         call polynomialBackground(coeffDens,coeffTemp)
-         deallocate( coeffDens, coeffTemp)
+            alpha0(:)=0.0_cp
+            temp0(:) =0.0_cp
+            rgrav(:) =0.0_cp
+            rho0(:)  =0.0_cp
+
+            do i=1,8
+               alpha0(:) = alpha0(:)+coeffAlpha(i)*rrOcmb(:)**(i-1)
+               temp0(:)  = temp0(:) +coeffTemp(i) *rrOcmb(:)**(i-1)
+            end do
+
+            do i=1,5
+               rgrav(:)  = rgrav(:) +coeffGrav(i) *rrOcmb(:)**(i-1)
+            end do
+
+            do i=1,6
+               rho0(:)   = rho0(:) +coeffDens(i) *rrOcmb(:)**(i-1)
+            end do
+
+            alpha0(:)=exp(alpha0(:)) ! Polynomial fit was on ln(alpha0)
+
+            DissNb   =alpha0(1)*rgrav(1)*(rrOcmb(1)-rrOcmb(n_r_max))*5.8232e7_cp &
+            &         /1.73e4_cp ! 1.73e4 is cp 5.8232e7_cp is R_S
+
+            ThExpNb  =alpha0(1)*temp0(1)
+            alpha0(:)=alpha0(:)/alpha0(1)
+            rgrav(:) =rgrav(:)/rgrav(1)
+            temp0(:) =temp0(:)/temp0(1)
+            rho0(:)  =rho0(:)/rho0(1)
+
+            strat   =log(rho0(n_r_max)/rho0(1)) ! Just for printing
+
+            !-- Radial profile for the Grüneisen parameter (from Preising et al. 2023)
+            ogrun(:) = ( -0.25_cp * (0.7_cp - 0.14_cp)*(             &
+            &             1.0_cp+tanh(50.0_cp*(rrOcmb(:)-0.65_cp)))  &
+            &           *(1.0_cp-tanh(50.0_cp*(rrOcmb(:)-0.8_cp)))) + 0.7_cp
+            GrunNb = ogrun(1)
+            ogrun(:) = one/ogrun(:)
+            polind   = ogrun(1) ! Just for the print
+            ogrun(:) = ogrun(:)/ogrun(1)
+
+            ! The final stuff is always required
+            call get_dr(rho0,drho0,n_r_max,rscheme_oc)
+            beta(:) = drho0(:)/rho0(:)
+            call get_dr(beta,dbeta,n_r_max,rscheme_oc)
+            call get_dr(dbeta,ddbeta,n_r_max,rscheme_oc)
+
+            call get_dr(temp0,dtemp0,n_r_max,rscheme_oc)
+            call get_dr(dtemp0,d2temp0,n_r_max,rscheme_oc)
+            call get_dr(alpha0,dLalpha0,n_r_max,rscheme_oc)
+            dLalpha0=dLalpha0/alpha0 ! d log (alpha) / dr
+            call get_dr(dLalpha0,ddLalpha0,n_r_max,rscheme_oc)
+            dLtemp0 = dtemp0/temp0
+            ddLtemp0 =-(dtemp0/temp0)**2+d2temp0/temp0
+
+            !-- Multiply the gravity by alpha0 and temp0
+            rgrav(:)=rgrav(:)*alpha0(:)*temp0(:)
+
+            deallocate(coeffTemp,coeffDens,coeffGrav,coeffAlpha)
+         else
+            allocate(coeffTemp(8),coeffDens(6))
+            coeffTemp= [ -77880.376328818_cp, 1089237.928095523_cp,      &
+            &            -5718555.197998112_cp, 16027297.768664116_cp,   &
+            &            -26159709.956658602_cp, 24913613.036177561_cp,  &
+            &            -12819667.849508610_cp, 2746322.598433222_cp ]
+            coeffDens= [ 8.813043492_cp, -51.578717073_cp, 145.416402036_cp, &
+            &           -211.845381533_cp, 152.131339032_cp, -42.964602602_cp]
+
+            call polynomialBackground(coeffDens,coeffTemp)
+            deallocate( coeffDens, coeffTemp)
+         end if
 
       else if ( index(interior_model,'SUN') /= 0 ) then
 
          ! rho is negative beyond r_cut_model=0.9965
          ! radratio should be 0.7 (size of the Sun's CZ)
+         ! This is Model S by JCD (e.g.: JCD+ Science 1996)
 
          allocate( coeffDens(6), coeffTemp(4) )
          coeffDens = [-24.83750402_cp, 231.79029994_cp, -681.72774358_cp, &
@@ -416,59 +541,74 @@ contains
          call polynomialBackground(coeffDens,coeffTemp)
          deallocate( coeffDens, coeffTemp)
 
-      else if ( index(interior_model,'EARTH') /= 0 ) then
-         DissNb =0.3929_cp ! Di = \alpha_O g d / c_p
-         ThExpNb=0.0566_cp ! Co = \alpha_O T_O
-         GrunNb =1.5_cp ! Gruneisen paramater
-         hcomp  =2.2_cp*r_cmb
+      else if (index(interior_model,'MESA_5M_ZAMS') /= 0) then
 
-         alpha0=(one+0.6_cp*r**2/hcomp**2)/(one+0.6_cp/2.2_cp**2)
-         rgrav =(r-0.6_cp*r**3/hcomp**2)/(r_cmb*(one-0.6_cp/2.2_cp**2))
+         l_non_adia = .true.
+         rrOcmb(:) = r(:)*r_cut_model/r_cmb
 
-         !dentropy0 = -half*(ampStrat+one)*(one-tanh(slopeStrat*(r-rStrat)))+ &
-         !            & ampStrat
+         allocate( coeffAlpha(12), coeffTemp(12), coeffGrav(12), coeffGrun(12),&
+         &         coeffDens(12) )
 
-         !! d ln(temp0) / dr
-         !dtemp0=epsS*dentropy0-DissNb*alpha0*rgrav
+         coeffAlpha=[1.07280013e+00_cp, -7.35271452e-02_cp,  1.35373501e+00_cp,&
+         &          -2.70033254e+01_cp,  1.34218482e+02_cp, -1.85203678e+02_cp,&
+         &          -4.03705669e+02_cp,  1.65171816e+03_cp, -1.91235980e+03_cp,&
+         &           4.33699991e+02_cp,  6.74102545e+02_cp, -3.67415688e+02_cp]
 
-         !call getBackground(dtemp0,0.0_cp,temp0)
-         !temp0=exp(temp0) ! this was ln(T_0)
-         !dtemp0=dtemp0*temp0
+         coeffTemp=[1.71233163e+01_cp,  2.16376708e-01_cp, -2.33617981e+01_cp, &
+         &          2.95986199e+02_cp, -3.15614535e+03_cp,  1.80265801e+04_cp, &
+         &         -5.99840212e+04_cp,  1.23788205e+05_cp, -1.61112426e+05_cp, &
+         &          1.28833197e+05_cp, -5.78439543e+04_cp,  1.11724125e+04_cp]
 
-         !drho0=-ThExpNb*epsS*alpha0*temp0*dentropy0-DissNb/GrunNb*alpha0*rgrav
-         !call getBackground(drho0,0.0_cp,rho0)
-         !rho0=exp(rho0) ! this was ln(rho_0)
-         !beta=drho0
+         coeffGrav=[1.31049693e+02_cp,  1.04893208e+06_cp,  1.93822208e+06_cp, &
+         &         -5.15044761e+07_cp,  4.41798276e+08_cp, -2.66511461e+09_cp, &
+         &          1.02063273e+10_cp, -2.43712757e+10_cp,  3.64094408e+10_cp, &
+         &         -3.32103850e+10_cp,  1.69572548e+10_cp, -3.72150208e+09_cp]
 
-         hcond = (one-0.4469_cp*(r/r_cmb)**2)/(one-0.4469_cp)
-         hcond = hcond/hcond(1)
-         temp0 = (one+GrunNb*(r_icb**2-r**2)/hcomp**2)
-         temp0 = temp0/temp0(1)
-         dtemp0cond=-cmbHflux/(r**2*hcond)
+         coeffGrun=[1.57026325e+00_cp, -4.46247381e-02_cp,  3.03734351e-01_cp, &
+         &         -8.28253239e+00_cp, -2.63234309e+01_cp,  6.05835596e+02_cp, &
+         &         -2.89779916e+03_cp,  6.90494749e+03_cp, -9.29010895e+03_cp, &
+         &          7.04974613e+03_cp, -2.73663642e+03_cp,  3.98015351e+02_cp]
 
-         do k=1,10 ! 10 iterations is enough to converge
-            dtemp0ad=-DissNb*alpha0*rgrav*temp0-epsS*temp0(n_r_max)
-            n_const=minloc(abs(dtemp0ad-dtemp0cond))
-            rStrat=r(n_const(1))
-            func=half*(tanh(slopeStrat*(r-rStrat))+one)
+         coeffDens=[3.05336249e+00_cp, -2.52357616e-01_cp, -3.47786718e-01_cp, &
+         &         -3.82246141e+02_cp,  4.44024160e+03_cp, -2.80734664e+04_cp, &
+         &          1.02942741e+05_cp, -2.30659612e+05_cp,  3.22111291e+05_cp, &
+         &         -2.74248402e+05_cp,  1.30456564e+05_cp, -2.66069272e+04_cp]
 
-            if ( rStrat<r_cmb ) then
-               dtemp0=func*dtemp0cond+(one-func)*dtemp0ad
-            else
-               dtemp0=dtemp0ad
-            end if
+         alpha0(:)=0.0_cp
+         temp0(:) =0.0_cp
+         rgrav(:) =0.0_cp
+         ogrun(:) =0.0_cp
+         dtemp0(:)=0.0_cp
+         rho0(:)  =0.0_cp
+         drho0(:) =0.0_cp
 
-            call getBackground(dtemp0,one,temp0)
+         do i=1,12
+            alpha0(:) = alpha0(:)+coeffAlpha(i)*rrOcmb(:)**(i-1)
+            temp0(:)  = temp0(:) +coeffTemp(i) *rrOcmb(:)**(i-1)
+            rgrav(:)  = rgrav(:) +coeffGrav(i) *rrOcmb(:)**(i-1)
+            ogrun(:)  = ogrun(:) +coeffGrun(i) *rrOcmb(:)**(i-1)
+            rho0(:)   = rho0(:)  +coeffDens(i) *rrOcmb(:)**(i-1)
          end do
 
-         dentropy0=dtemp0/temp0/epsS+DissNb*alpha0*rgrav/epsS
-         !drho0=-ThExpNb*epsS*alpha0*temp0*dentropy0-DissNb*alpha0*rgrav/GrunNb
-         drho0=-DissNb*alpha0*rgrav/GrunNb
-         call getBackground(drho0,0.0_cp,rho0)
-         rho0=exp(rho0) ! this was ln(rho_0)
-         beta=drho0
+         do i=2,12 ! d (lnT)/ dr
+            dtemp0(:) = dtemp0(:)+coeffTemp(i)*(i-1)*rrOcmb(:)**(i-2)
+            drho0(:)  = drho0(:) +coeffDens(i)*(i-1)*rrOcmb(:)**(i-2)
+         end do
 
-         ! The final stuff is always required
+         alpha0(:)=alpha0(:)/alpha0(1)
+         rgrav(:) =rgrav(:)/rgrav(1)
+
+         !Normalise
+         call getBackground(dtemp0,0.0_cp,temp0)
+         call getBackground(drho0,0.0_cp,rho0)
+         temp0 = exp(temp0) ! Fit was on ln(temp0)
+         rho0  = exp(rho0)  ! Fit was on ln(rho0)
+         drho0 = drho0 * rho0 ! Fits were on ln(rho0) and ln(temp0)
+         dtemp0= dtemp0* temp0
+
+         beta = drho0
+
+         !-- Final stuff
          call get_dr(beta,dbeta,n_r_max,rscheme_oc)
          call get_dr(dbeta,ddbeta,n_r_max,rscheme_oc)
          call get_dr(dtemp0,d2temp0,n_r_max,rscheme_oc)
@@ -476,21 +616,16 @@ contains
          dLalpha0=dLalpha0/alpha0 ! d log (alpha) / dr
          call get_dr(dLalpha0,ddLalpha0,n_r_max,rscheme_oc)
          dLtemp0 = dtemp0/temp0
-         call get_dr(dLtemp0,ddLtemp0,n_r_max,rscheme_oc)
+         ddLtemp0 =-(dtemp0/temp0)**2+d2temp0/temp0
 
-         ! N.B. rgrav is not gravity but alpha * grav
-         rgrav = alpha0*rgrav
-
-         !-- ogrun
-         ogrun(:)=one/GrunNb
-
-         l_non_adia = .true.
+         !-- Multiply the gravity by alpha0 and temp0
+         rgrav(:)=rgrav(:)*alpha0(:)*temp0(:)
 
       else  !-- Usual polytropic reference state
          ! g(r) = g0 + g1*r/ro + g2*(ro/r)**2
          ! Default values: g0=0, g1=1, g2=0
          ! An easy way to change gravity
-         rgrav(:)=g0+g1*r(:)/r_cmb+g2*(r_cmb/r)**2
+         rgrav(:)=g0+g1*r(:)/r_cmb+g2*r_cmb**2*or2(:)
 
          if ( l_anel ) then
 
@@ -520,8 +655,12 @@ contains
             else !-- Adiabatic reference state
 
                if ( l_isothermal ) then ! Gruneisen is zero in this limit
-                  fac        =strat / ( g0+half*g1*(one+radratio)+g2/radratio ) &
-                  &           / (r_cmb-r_icb)
+                  if ( l_full_sphere ) then
+                     fac = strat/(half*g1*(one+radratio))/(r_cmb-r_icb)
+                  else
+                     fac=strat / ( g0+half*g1*(one+radratio)+g2/radratio ) &
+                     &         / (r_cmb-r_icb)
+                  end if
                   DissNb     =0.0_cp
                   GrunNb     =0.0_cp
                   ogrun(:)   =0.0_cp
@@ -537,20 +676,30 @@ contains
                   ddLtemp0(:)=0.0_cp
                else
                   if ( strat == 0.0_cp .and. DissNb /= 0.0_cp ) then
-                     strat = polind* log( (g0+half*g1*(one+radratio)+g2/radratio)*&
-                     &                    (r_cmb-r_icb)*DissNb+1 )
+                     if ( l_full_sphere ) then
+                        strat = polind* log( (half*g1*(one+radratio))*  &
+                        &                    (r_cmb-r_icb)*DissNb+1 )
+                     else
+                        strat = polind* log( (g0+half*g1*(one+radratio)+g2/radratio)*&
+                        &                    (r_cmb-r_icb)*DissNb+1 )
+                     end if
                   else
-                     DissNb=( exp(strat/polind)-one )/(r_cmb-r_icb)/ &
-                            ( g0+half*g1*(one+radratio) +g2/radratio )
+                     if ( l_full_sphere ) then
+                        DissNb=( exp(strat/polind)-one )/(r_cmb-r_icb)/ &
+                        &      ( half*g1*(one+radratio) )
+                     else
+                        DissNb=( exp(strat/polind)-one )/(r_cmb-r_icb)/ &
+                        &      ( g0+half*g1*(one+radratio) +g2/radratio )
+                     end if
                   end if
-                  GrunNb      =one/polind
-                  ogrun(:)    =one/GrunNb
-                  temp0(:)    =-DissNb*( g0*r(:)+half*g1*r(:)**2/r_cmb- &
-                  &            g2*r_cmb**2/r(:) ) + one + DissNb*r_cmb* &
-                  &            (g0+half*g1-g2)
-                  rho0(:)     =temp0**polind
+                  GrunNb  =one/polind
+                  ogrun(:)=one/GrunNb
+                  temp0(:)=-DissNb*( g0*r(:)+half*g1*r(:)**2/r_cmb-   &
+                  &         g2*r_cmb**2*or1(:) ) + one + DissNb*r_cmb* &
+                  &         (g0+half*g1-g2)
+                  rho0(:) =temp0**polind
 
-                  if (l_centrifuge) opressure0(:) = temp0**(-polind-1)
+                  !if (l_centrifuge) opressure0(:) = temp0**(-polind-1)
 
                   !-- Computation of beta= dln rho0 /dr and dbeta=dbeta/dr
                   beta(:)     =-polind*DissNb*rgrav(:)/temp0(:)
@@ -619,7 +768,7 @@ contains
       else ! Boussinesq
          rho0(:)     =one
          temp0(:)    =one
-         opressure0(:)=one
+         !opressure0(:)=one
          otemp1(:)   =one
          orho1(:)    =one
          orho2(:)    =one
@@ -658,18 +807,12 @@ contains
               &         0.0_cp,0.0_cp,0.0_cp,0.0_cp,.false.)
 
          !----- Store first n_r_ic_max points of r_ic_2 to r_ic:
-         do n_r=1,n_r_ic_max-1
-            r_ic(n_r)   =r_ic_2(n_r)
-            O_r_ic(n_r) =one/r_ic(n_r)
-            O_r_ic2(n_r)=O_r_ic(n_r)*O_r_ic(n_r)
-         end do
-         n_r=n_r_ic_max
-         r_ic(n_r)   =0.0_cp
-         O_r_ic(n_r) =0.0_cp
-         O_r_ic2(n_r)=0.0_cp
-
-         !-- Get no of point on graphical output grid:
-         !   No is set to -1 to indicate that point is not on graphical output grid.
+         r_ic(1:n_r_ic_max-1)   =r_ic_2(1:n_r_ic_max-1)
+         O_r_ic(1:n_r_ic_max-1) =one/r_ic(1:n_r_ic_max-1)
+         O_r_ic2(1:n_r_ic_max-1)=O_r_ic(1:n_r_ic_max-1)*O_r_ic(1:n_r_ic_max-1)
+         r_ic(n_r_ic_max)   =0.0_cp
+         O_r_ic(n_r_ic_max) =0.0_cp
+         O_r_ic2(n_r_ic_max)=0.0_cp
 
       end if
 
@@ -697,317 +840,325 @@ contains
             cheb_int_ic(n_cheb)=-fac_int / real(n_cheb_int*(n_cheb_int-2),kind=cp)
          end do
 
+         dr_top(1)=(two*(2*n_r_ic_max-2)*(2*n_r_ic_max-2)+one)/6.0_cp
+         do n_r=2,2*n_r_ic_max-1
+            diff = two* sin( half*(n_r-1)*pi/(2*n_r_ic_max-2) ) * &
+            &           sin( half*(n_r-1)*pi/(2*n_r_ic_max-2) )
+            if ( mod(n_r,2) == 0 ) then
+               coeff=-one
+            else
+               coeff=one
+            end if
+            dr_top(n_r)=two*coeff/diff
+         end do
+         dr_top(2*n_r_ic_max-1) = half*dr_top(2*n_r_ic_max-1)
+
+         !-- This array can be used to compute the derivatives of the
+         !-- inner core quantities at radius r_i in real space. This is
+         !-- based on Chebyshev differentiation matrices in real space
+         !-- and make use of symmetry properties.
+         do n_r=1,n_r_ic_max-1
+            dr_top_ic(n_r) =dr_top(n_r)+dr_top(2*n_r_ic_max-n_r)
+         end do
+         dr_top_ic(n_r_ic_max) =dr_top(n_r_ic_max)
+
+         !-- Cheb factor of the form 2/(b-a)=2/(2*ri)=1/ri
+         dr_top_ic(:) = dr_top_ic(:)*dr_fac_ic
+
       end if
 
    end subroutine radial
 !------------------------------------------------------------------------------
-   subroutine transportProperties
+   subroutine transportProperties()
       !
       ! Calculates the transport properties: electrical conductivity,
       ! kinematic viscosity and thermal conductivity.
       !
-
-      integer :: n_r
-
-      real(cp) :: a,b,c,s1,s2,r0
-      real(cp) :: dsigma0
+      real(cp) :: a,b,c,s1,s2,r0,a0,a1,a2,a3,a4,a5
+      real(cp) :: dsigma0, ampVisc, ampKap, slopeVisc, slopeKap
       real(cp) :: dvisc(n_r_max), dkappa(n_r_max), dsigma(n_r_max)
-      !real(cp) :: condBot(n_r_max), condTop(n_r_max)
-      !real(cp) :: func(n_r_max)
-      real(cp) :: kcond(n_r_max)
-      real(cp) :: a0,a1,a2,a3,a4,a5
-      real(cp) :: kappatop,rrOcmb, ampVisc, ampKap, slopeVisc, slopeKap
+      real(cp) :: rrOcmb(n_r_max), kcond(n_r_max)
+      !real(cp) :: condBot(n_r_max), condTop(n_r_max), func(n_r_max)
 
       !-- Variable conductivity:
-
       if ( imagcon == -10 ) then
          nVarCond=1
-         lambda  =r**5.0_cp
-         sigma   =one/lambda
-         dLlambda=5.0_cp/r
+         lambda(:)  =r(:)**5.0_cp
+         sigma(:)   =one/lambda(:)
+         dLlambda(:)=5.0_cp/r(:)
       else if ( l_mag ) then
-          if ( nVarCond == 0 ) then
-             lambda  =one
-             sigma   =one
-             dLlambda=0.0_cp
-          else if ( nVarCond == 1 ) then
-             b =log(three)/con_FuncWidth
-             r0=con_radratio*r_cmb
-             s1=tanh(b*(r0-r_cmb))
-             s2=tanh(b*(r0-r_icb))
-             a =(-one+con_LambdaOut)/(s1-s2)
-             c =(s1-s2*con_LambdaOut)/(s1-s2)
-             sigma   = a*tanh(b*(r0-r))+c
-             dsigma  =-a*b/cosh(b*(r0-r))
-             lambda  =one/sigma
-             dLlambda=-dsigma/sigma
-          else if ( nVarCond == 2 ) then
+         select case(nVarCond)
 
-             r0=con_radratio*r_cmb
-             !------ Use grid point closest to r0:
-             do n_r=1,n_r_max
-                if ( r(n_r) < r0 )then
-                   r0=r(n_r)
-                   exit
-                end if
-             end do
-             dsigma0=(con_LambdaMatch-1)*con_DecRate /(r0-r_icb)
-             do n_r=1,n_r_max
-                if ( r(n_r) < r0 ) then
-                   sigma(n_r)   = one+(con_LambdaMatch-1)* &
-                       ( (r(n_r)-r_icb)/(r0-r_icb) )**con_DecRate
-                   dsigma(n_r)  =  dsigma0 * &
-                       ( (r(n_r)-r_icb)/(r0-r_icb) )**(con_DecRate-1)
-                else
-                   sigma(n_r)  =con_LambdaMatch * &
-                       exp(dsigma0/con_LambdaMatch*(r(n_r)-r0))
-                   dsigma(n_r) = dsigma0* &
-                       exp(dsigma0/con_LambdaMatch*(r(n_r)-r0))
-                end if
-                lambda(n_r)  = one/sigma(n_r)
-                dLlambda(n_r)=-dsigma(n_r)/sigma(n_r)
-             end do
-          else if ( nVarCond == 3 ) then ! Magnetic diff propto 1/rho
-             lambda=rho0(n_r_max)/rho0
-             sigma=one/lambda
-             call get_dr(lambda,dsigma,n_r_max,rscheme_oc)
-             dLlambda=dsigma/lambda
-          else if ( nVarCond == 4 ) then ! Profile
-             lambda=(rho0/rho0(n_r_max))**difExp
-             sigma=one/lambda
-             call get_dr(lambda,dsigma,n_r_max,rscheme_oc)
-             dLlambda=dsigma/lambda
-          end if
+            case(1)
+               b =log(three)/con_FuncWidth
+               r0=con_radratio*r_cmb
+               s1=tanh(b*(r0-r_cmb))
+               s2=tanh(b*(r0-r_icb))
+               a =(-one+con_LambdaOut)/(s1-s2)
+               c =(s1-s2*con_LambdaOut)/(s1-s2)
+               sigma(:)   = a*tanh(b*(r0-r(:)))+c
+               dsigma(:)  =-a*b/(cosh(b*(r0-r(:))))**2
+               lambda(:)  =one/sigma(:)
+               dLlambda(:)=-dsigma(:)/sigma(:)
+
+            case(2) ! Two-branches solution from Gomez-Perez
+               r0=con_radratio*r_cmb
+               !------ Find the grid point closest to r0:
+               r0=r(minloc(abs(r(:)-r0),dim=1))
+               dsigma0=(con_LambdaMatch-1)*con_DecRate/(r0-r_icb)
+               where ( r < r0 )
+                  sigma=one+(con_LambdaMatch-1)*((r-r_icb)/(r0-r_icb))**con_DecRate
+                  dsigma=dsigma0*((r-r_icb)/(r0-r_icb))**(con_DecRate-1)
+               else where
+                  sigma=con_LambdaMatch*exp(dsigma0/con_LambdaMatch*(r-r0))
+                  dsigma=dsigma0*exp(dsigma0/con_LambdaMatch*(r-r0))
+               end where
+               lambda(:)  =one/sigma(:)
+               dLlambda(:)=-dsigma(:)/sigma(:)
+
+            case(3) ! Magnetic diff propto 1/rho
+               lambda(:)=rho0(n_r_max)/rho0(:)
+               sigma(:)=one/lambda(:)
+               call get_dr(lambda,dsigma,n_r_max,rscheme_oc)
+               dLlambda(:)=dsigma(:)/lambda(:)
+
+            case(4) ! Profile related to a power-law of density
+               lambda=(rho0(:)/rho0(n_r_max))**difExp
+               sigma(:)=one/lambda(:)
+               call get_dr(lambda,dsigma,n_r_max,rscheme_oc)
+               dLlambda(:)=dsigma(:)/lambda(:)
+
+            case default ! Constant diffusivity
+               lambda(:)  =one
+               sigma(:)   =one
+               dLlambda(:)=0.0_cp
+
+         end select
       end if
 
       !-- Variable thermal diffusivity
       if ( l_heat ) then
 
-         if ( nVarDiff == 0 ) then
-            kappa  =one
-            dLkappa=0.0_cp
-         else if ( nVarDiff == 1 ) then ! Constant conductivity
-            ! kappa(n_r)=one/rho0(n_r) Denise's version
-            kappa=rho0(n_r_max)/rho0
-            call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            dLkappa=dkappa/kappa
-         else if ( nVarDiff == 2 ) then ! Profile
-            kappa=(rho0/rho0(n_r_max))**difExp
-            call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            dLkappa=dkappa/kappa
-         else if ( nVarDiff == 3 ) then ! polynomial fit to a model
-            if ( radratio < 0.19_cp ) then
-               write(*,*) '! NOTE: with this polynomial fit     '
-               write(*,*) '! for variable thermal conductivity  '
-               write(*,*) '! considering radratio < 0.2 may lead'
-               write(*,*) '! to strange profiles'
-               call abortRun('Stop the run in radial.f90')
-            end if
-            a0 = -0.32839722_cp
-            a1 =  one
-            a2 = -1.16153274_cp
-            a3 =  0.63741485_cp
-            a4 = -0.15812944_cp
-            a5 =  0.01034262_cp
-            do n_r=1,n_r_max
-               rrOcmb = r(n_r)/r_cmb*r_cut_model
-               kappa(n_r)= a5 + a4*rrOcmb    + a3*rrOcmb**2 &
-               &              + a2*rrOcmb**3 + a1*rrOcmb**4 &
-               &                             + a0*rrOcmb**5
+         select case(nVarDiff)
 
-            end do
-            kappatop=kappa(1) ! normalise by the value at the top
-            kappa=kappa/kappatop
-            call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            dLkappa=dkappa/kappa
-         else if ( nVarDiff == 4) then ! Earth case
-            !condTop=r_cmb**2*dtemp0(1)*or2/dtemp0
-            !do n_r=2,n_r_max
-            !  if ( r(n_r-1)>rStrat .and. r(n_r)<=rStrat ) then
-            !     if ( r(n_r-1)-rStrat < rStrat-r(n_r) ) then
-            !        n_const=n_r-1
-            !     else
-            !        n_const=n_r
-            !     end if
-            !  end if
-            !end do
-            !condBot=(rho0/rho0(n_const))*condTop(n_const)
-            !func=half*(tanh(slopeStrat*(r-rStrat))+one)
-            !kcond=condTop*func+condBot*(1-func)
-            !kcond=kcond/kcond(n_r_max)
-            !kappa=kcond/rho0
-            !call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            !dLkappa=dkappa/kappa
+            case(1) ! Constant conductivity
+               ! kappa(:)=one/rho0(:) Denise Tortorella's version
+               kappa(:)=rho0(n_r_max)/rho0(:)
+               call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
+               dLkappa(:)=dkappa(:)/kappa(:)
 
-            ! Alternative scenario
-            kcond=(one-0.4469_cp*(r/r_cmb)**2)/(one-0.4469_cp)
-            kcond=kcond/kcond(1)
-            kappa=kcond/rho0
-            call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            dLkappa=dkappa/kappa
-         else if ( nVarDiff == 5 ) then ! Thermal background equilibrium
-            kcond(:)=one/(r(:)*r(:)*dLtemp0(:)*temp0(:))
-            kcond=kcond/kcond(1)
-            kappa=kcond/rho0
-            call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
-            dLkappa=dkappa/kappa
-         else if ( nVarDiff == 6 ) then ! Jump in the stratified layer
-            ampKap = 10.0_cp
-            slopeKap = 100.0_cp
-            if ( rStrat <= r_icb ) then
-               kappa(:) = one
-            else
-               kappa(:)=(-half*(ampKap-one)*tanh(slopeKap*(r(:)-rStrat))+      &
-               &          half*(ampKap+one))*(half*(ampKap-one)*tanh(slopeKap* &
-               &          (r(:)-rStrat-thickStrat))+half*(ampKap+one))/ampKap
-            end if
-            dLkappa(:)=ampKap*(slopeKap*(-half*ampKap + half)*(-tanh(slopeKap*(r &
-            &         - rStrat))**2 + 1)*(half*ampKap + (half*ampKap - half)*    &
-            &         tanh(slopeKap*(r - rStrat - thickStrat)) + half)/ampKap +  &
-            &         slopeKap*(half*ampKap - half)*(-tanh(slopeKap*(r - rStrat -&
-            &         thickStrat))**2 + 1)*(half*ampKap + (-half*ampKap + half)* &
-            &         tanh(slopeKap*(r - rStrat)) + half)/ampKap)/((half*ampKap +&
-            &         (-half*ampKap + half)*tanh(slopeKap*(r - rStrat)) + half)* &
-            &         (half*ampKap + (half*ampKap - half)*tanh(slopeKap*(r -     &
-            &         rStrat - thickStrat)) + half))
-          else if ( nVarDiff == 7 ) then ! Bottom stratified
-             ampKap = 10.0_cp
-             slopeKap = 30.0_cp
-             if ( rStrat <= r_icb ) then
-                kappa(:) = one
-             else
-                kappa(:)=(half*(ampKap-one)*tanh(slopeKap* &
-                &       (r(:)-rStrat))+half*(ampKap+one))/ampKap
-             end if
-             dLkappa(:)=slopeKap*(half*ampKap-half)*(-tanh(slopeKap*(r(:)-rStrat))**2&
-             &         +one)/(half*ampKap+(half*ampKap-half)*tanh(slopeKap*(r(:)-    &
-             &         rStrat))+half)
-          end if
+            case(2) ! Related to a power-law of the density profile
+               kappa(:)=(rho0(:)/rho0(n_r_max))**difExp
+               call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
+               dLkappa(:)=dkappa(:)/kappa(:)
+
+            case(3) ! Polynomial fit to a model
+               if ( radratio < 0.19_cp ) then
+                  write(output_unit,*) '! NOTE: with this polynomial fit     '
+                  write(output_unit,*) '! for variable thermal conductivity  '
+                  write(output_unit,*) '! considering radratio < 0.2 may lead'
+                  write(output_unit,*) '! to strange profiles'
+                  call abortRun('Stop the run in radial.f90')
+               end if
+               a0 = -0.32839722_cp
+               a1 =  one
+               a2 = -1.16153274_cp
+               a3 =  0.63741485_cp
+               a4 = -0.15812944_cp
+               a5 =  0.01034262_cp
+               rrOcmb(:) = r(:)/r_cmb*r_cut_model
+               kappa(:)= a5 + a4*rrOcmb(:) + a3*rrOcmb(:)**2 + a2*rrOcmb(:)**3 &
+               &            + a1*rrOcmb(:)**4 + a0*rrOcmb(:)**5
+               kappa(:)=kappa(:)/kappa(1) ! normalize by the value at the outer boundary
+               call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
+               dLkappa(:)=dkappa(:)/kappa(:)
+
+            case(4) ! Earth case
+               kcond(:)=(one-0.4469_cp*(r(:)/r_cmb)**2)/(one-0.4469_cp)
+               kcond(:)=kcond(:)/kcond(1)
+               kappa(:)=kcond(:)/rho0
+               call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
+               dLkappa(:)=dkappa(:)/kappa(:)
+
+            case(5) ! Thermal background equilibrium
+               kcond(:)=one/(r(:)*r(:)*dLtemp0(:)*temp0(:))
+               kcond(:)=kcond(:)/kcond(1)
+               kappa(:)=kcond(:)/rho0(:)
+               call get_dr(kappa,dkappa,n_r_max,rscheme_oc)
+               dLkappa(:)=dkappa(:)/kappa(:)
+
+            case(6) ! Jump in the stratified layer
+               ampKap = 10.0_cp
+               slopeKap = 100.0_cp
+               if ( rStrat(1) <= r_icb ) then
+                  kappa(:) = one
+               else
+                  kappa(:)=(-half*(ampKap-one)*tanh(slopeKap*(r(:)-rStrat(1)))+     &
+                  &          half*(ampKap+one))*(half*(ampKap-one)*tanh(slopeKap*   &
+                  &          (r(:)-rStrat(1)-thickStrat(1)))+half*(ampKap+one))/ampKap
+               end if
+               dLkappa(:)=ampKap*(slopeKap*(-half*ampKap + half)*(-tanh(slopeKap*(r    &
+               &         - rStrat(1)))**2 + 1)*(half*ampKap + (half*ampKap - half)*    &
+               &         tanh(slopeKap*(r - rStrat(1) - thickStrat(1))) + half)/ampKap+&
+               &         slopeKap*(half*ampKap - half)*(-tanh(slopeKap*(r - rStrat(1) -&
+               &         thickStrat(1)))**2 + 1)*(half*ampKap + (-half*ampKap + half)* &
+               &         tanh(slopeKap*(r - rStrat(1))) + half)/ampKap)/((half*ampKap +&
+               &         (-half*ampKap + half)*tanh(slopeKap*(r - rStrat(1))) + half)* &
+               &         (half*ampKap + (half*ampKap - half)*tanh(slopeKap*(r -        &
+               &         rStrat(1) - thickStrat(1))) + half))
+
+            case(7) ! Bottom stratified
+               ampKap = 10.0_cp
+               slopeKap = 30.0_cp
+               if ( rStrat(1) <= r_icb ) then
+                  kappa(:)=one
+               else
+                  kappa(:)=(half*(ampKap-one)*tanh(slopeKap* &
+                  &       (r(:)-rStrat(1)))+half*(ampKap+one))/ampKap
+               end if
+               dLkappa(:)=slopeKap*(half*ampKap-half)*(-tanh(slopeKap*(r(:)-   &
+               &          rStrat(1)))**2+one)/(half*ampKap+(half*ampKap-half)* &
+               &          tanh(slopeKap*(r(:)-rStrat(1)))+half)
+
+            case default
+               kappa(:)  =one
+               dLkappa(:)=0.0_cp
+
+         end select
 
       end if
 
       !-- Eps profiles
       !-- The remaining division by rho will happen in updateS.f90
-      if ( nVarEps == 0 ) then
-         ! eps is constant
-         if ( l_anelastic_liquid ) then
-            epscProf(:)=one
-         else
-            epscProf(:)=otemp1(:)
-         end if
-      else if ( nVarEps == 1 ) then
-         ! rho*eps in the RHS
-         if ( l_anelastic_liquid ) then
-            epscProf(:)=rho0(:)
-         else
-            epscProf(:)=rho0(:)*otemp1(:)
-         end if
-      else if ( nVarEps == 2 ) then
-         ! rho*temp*eps in the RHS
-         if ( l_anelastic_liquid ) then
-            epscProf(:)=rho0(:)*temp0(:)
-         else
-            epscProf(:)=rho0(:)
-         end if
-      else if ( nVarEps == 3 ) then
-         ! eps*rho**2*temp**(-3)*exp(-Bn/T) in the RHS
-         if ( l_anelastic_liquid ) then
-            epscProf(:)=rho0(:)**2*temp0(:)**(-3)*exp(-Bn/temp0(:))
-         else
-            epscProf(:)=rho0(:)**2*temp0(:)**(-4)*exp(-Bn/temp0(:))
-         end if
-      end if
+      select case(nVarEps)
+
+         case(1) ! rho*eps in the RHS
+            if ( l_anelastic_liquid ) then
+               epscProf(:)=rho0(:)
+            else
+               epscProf(:)=rho0(:)*otemp1(:)
+            end if
+
+         case(2) ! rho*temp*eps in the RHS
+            if ( l_anelastic_liquid ) then
+               epscProf(:)=rho0(:)*temp0(:)
+            else
+               epscProf(:)=rho0(:)
+            end if
+         case(3) ! eps*rho**2*temp**(-3)*exp(-Bn/T) in the RHS
+            if ( l_anelastic_liquid ) then
+               epscProf(:)=rho0(:)**2*temp0(:)**(-3)*exp(-Bn/temp0(:))
+            else
+               epscProf(:)=rho0(:)**2*temp0(:)**(-4)*exp(-Bn/temp0(:))
+            end if
+
+         case default ! eps is constant
+            if ( l_anelastic_liquid ) then
+               epscProf(:)=one
+            else
+               epscProf(:)=otemp1(:)
+            end if
+
+      end select
 
       !-- Variable viscosity
-      if ( nVarVisc == 0 ) then ! default: constant kinematic viscosity
-         visc(:)   =one
-         dLvisc(:) =0.0_cp
-         ddLvisc(:)=0.0_cp
-      else if ( nVarVisc == 1 ) then ! Constant dynamic viscosity
-         visc(:)=rho0(n_r_max)/rho0(:)
-         call get_dr(visc,dvisc,n_r_max,rscheme_oc)
-         dLvisc(:)=dvisc(:)/visc(:)
-         call get_dr(dLvisc,ddLvisc,n_r_max,rscheme_oc)
-      else if ( nVarVisc == 2 ) then ! Profile
-         visc(:)=(rho0/rho0(n_r_max))**difExp
-         call get_dr(visc,dvisc,n_r_max,rscheme_oc)
-         dLvisc(:)=dvisc(:)/visc(:)
-         call get_dr(dLvisc,ddLvisc,n_r_max,rscheme_oc)
-      else if ( nVarVisc == 3 ) then ! Jump in the stratified layer
-         ampVisc = 10.0_cp
-         slopeVisc = 100.0_cp
-         if ( rStrat <= r_icb ) then
-            visc(:) = one
-         else
-            visc(:)=(-half*(ampVisc-one)*tanh(slopeVisc*(r(:)-rStrat))+       &
-            &         half*(ampVisc+one))*(half*(ampVisc-one)*tanh(slopeVisc* &
-            &         (r(:)-rStrat-thickStrat))+half*(ampVisc+one))/ampVisc
-         end if
-         dLvisc(:)=ampVisc*(slopeVisc*(-half*ampVisc + half)*(-tanh(slopeVisc*(r &
-         &         - rStrat))**2 + 1)*(half*ampVisc + (half*ampVisc - half)*     &
-         &         tanh(slopeVisc*(r - rStrat - thickStrat)) + half)/ampVisc +   &
-         &         slopeVisc*(half*ampVisc - half)*(-tanh(slopeVisc*(r - rStrat -&
-         &         thickStrat))**2 + 1)*(half*ampVisc + (-half*ampVisc + half)*  &
-         &         tanh(slopeVisc*(r - rStrat)) + half)/ampVisc)/((half*ampVisc +&
-         &         (-half*ampVisc + half)*tanh(slopeVisc*(r - rStrat)) + half)*  &
-         &         (half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r -     &
-         &         rStrat - thickStrat)) + half))
+      select case(nVarVisc)
 
-         ddLvisc(:)=-ampVisc*slopeVisc*(-half*ampVisc + half)*(slopeVisc*(-half* &
-         &          ampVisc + half)*(-tanh(slopeVisc*(r(:) - rStrat))**2 + 1)*   &
-         &          (half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r(:) - &
-         &          rStrat - thickStrat)) + half)/ampVisc + slopeVisc*(half*     &
-         &          ampVisc - half)*(-tanh(slopeVisc*(r(:) - rStrat - thickStrat)&
-         &          )**2 + 1)*(half*ampVisc + (-half*ampVisc + half)*tanh(       &
-         &          slopeVisc*(r(:) - rStrat)) + half)/ampVisc)*(-tanh(slopeVisc*&
-         &          (r(:) - rStrat))**2 + 1)/((half*ampVisc + (-half*ampVisc +   &
-         &          half)*tanh(slopeVisc*(r(:) - rStrat)) + half)**2*(half*      &
-         &          ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r(:) - rStrat&
-         &          - thickStrat)) + half)) - ampVisc*slopeVisc*(half*ampVisc -  &
-         &          half)*(slopeVisc*(-half*ampVisc + half)*(-tanh(slopeVisc*(   &
-         &          r(:) - rStrat))**2 + 1)*(half*ampVisc + (half*ampVisc - half)&
-         &          *tanh(slopeVisc*(r(:) - rStrat - thickStrat)) + half)/ampVisc&
-         &          + slopeVisc*(half*ampVisc - half)*(-tanh(slopeVisc*(r(:) -   &
-         &          rStrat - thickStrat))**2 + 1)*(half*ampVisc + (-half*ampVisc &
-         &          + half)*tanh(slopeVisc*(r(:) - rStrat)) + half)/ampVisc)*(   &
-         &          -tanh(slopeVisc*(r(:) - rStrat - thickStrat))**2 + 1)/((half*&
-         &          ampVisc + (-half*ampVisc + half)*tanh(slopeVisc*(r(:) -      &
-         &          rStrat)) + half)*(half*ampVisc + (half*ampVisc - half)*tanh( &
-         &          slopeVisc*(r(:) - rStrat - thickStrat)) + half)**2)+ampVisc*(&
-         &          2*slopeVisc**2*(-half*ampVisc + half)*(half*ampVisc - half)*(&
-         &          -tanh(slopeVisc*(r(:) - rStrat))**2 + 1)*(-tanh(slopeVisc*(  &
-         &          r(:) - rStrat - thickStrat))**2 + 1)/ampVisc - 2*slopeVisc**2&
-         &          *(-half*ampVisc + half)*(-tanh(slopeVisc*(r(:) - rStrat))**2 &
-         &          + 1)*(half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(  &
-         &          r(:) - rStrat - thickStrat)) + half)*tanh(slopeVisc*(r(:) -  &
-         &          rStrat))/ampVisc - 2*slopeVisc**2*(half*ampVisc - half)*(    &
-         &          -tanh(slopeVisc*(r(:) - rStrat - thickStrat))**2 + 1)*(half* &
-         &          ampVisc + (-half*ampVisc + half)*tanh(slopeVisc*(r(:) -      &
-         &          rStrat)) + half)*tanh(slopeVisc*(r(:) - rStrat - thickStrat))&
-         &          /ampVisc)/((half*ampVisc + (-half*ampVisc + half)*tanh(      &
-         &          slopeVisc*(r(:) - rStrat)) + half)*(half*ampVisc + (half*    &
-         &          ampVisc - half)*tanh(slopeVisc*(r(:) - rStrat - thickStrat)) &
-         &          + half))
-      else if ( nVarVisc == 4 ) then ! Bottom stratified
-         ampVisc = 10.0_cp
-         slopeVisc = 30.0_cp
-         if ( rStrat <= r_icb ) then
-            visc(:) = one
-         else
-            visc(:)=(half*(ampVisc-one)*tanh(slopeVisc* &
-            &       (r(:)-rStrat))+half*(ampVisc+one))/ampVisc
-         end if
-         dLvisc(:)=slopeVisc*(half*ampVisc-half)*(-tanh(slopeVisc*(r(:)-rStrat))**2&
-         &         +one)/(half*ampVisc+(half*ampVisc-half)*tanh(slopeVisc*(r(:)-   &
-         &         rStrat))+half)
-         
-         ddLvisc(:)=-slopeVisc**2*(half*ampVisc-half)**2*(-tanh(slopeVisc*(r(:)- &
-         &          rStrat))**2+one)**2/(half*ampVisc+(half*ampVisc-half)*       &
-         &          tanh(slopeVisc*(r(:)-rStrat))+half)**2-2*slopeVisc**2*(half* &
-         &          ampVisc-half)*(-tanh(slopeVisc*(r(:)-rStrat))**2+one)*tanh(  &
-         &          slopeVisc*(r(:)-rStrat))/(half*ampVisc+(half*ampVisc-half)*  &
-         &          tanh(slopeVisc*(r(:)-rStrat))+half)
-      end if
+         case(1) ! Constant dynamic viscosity
+            visc(:)=rho0(n_r_max)/rho0(:)
+            call get_dr(visc,dvisc,n_r_max,rscheme_oc)
+            dLvisc(:)=dvisc(:)/visc(:)
+            call get_dr(dLvisc,ddLvisc,n_r_max,rscheme_oc)
+
+         case(2) ! Profile based on a power-law of density
+            visc(:)=(rho0/rho0(n_r_max))**difExp
+            call get_dr(visc,dvisc,n_r_max,rscheme_oc)
+            dLvisc(:)=dvisc(:)/visc(:)
+            call get_dr(dLvisc,ddLvisc,n_r_max,rscheme_oc)
+
+         case(3) ! Jump in the stratified layer
+            ampVisc  =10.0_cp
+            slopeVisc=100.0_cp
+            if ( rStrat(1) <= r_icb ) then
+               visc(:)=one
+            else
+               visc(:)=(-half*(ampVisc-one)*tanh(slopeVisc*(r(:)-rStrat(1)))+    &
+               &         half*(ampVisc+one))*(half*(ampVisc-one)*tanh(slopeVisc* &
+               &         (r(:)-rStrat(1)-thickStrat(1)))+half*(ampVisc+one))/ampVisc
+            end if
+            dLvisc(:)=ampVisc*(slopeVisc*(-half*ampVisc + half)*(-tanh(slopeVisc*(r   &
+            &         - rStrat(1)))**2 + 1)*(half*ampVisc + (half*ampVisc - half)*    &
+            &         tanh(slopeVisc*(r - rStrat(1) - thickStrat(1))) + half)/ampVisc+&
+            &         slopeVisc*(half*ampVisc - half)*(-tanh(slopeVisc*(r - rStrat(1)-&
+            &         thickStrat(1)))**2 + 1)*(half*ampVisc + (-half*ampVisc + half)* &
+            &         tanh(slopeVisc*(r - rStrat(1))) + half)/ampVisc)/((half*ampVisc+&
+            &         (-half*ampVisc + half)*tanh(slopeVisc*(r - rStrat(1))) + half)* &
+            &         (half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r -       &
+            &         rStrat(1) - thickStrat(1))) + half))
+
+            ddLvisc(:)=-ampVisc*slopeVisc*(-half*ampVisc + half)*(slopeVisc*(-half*    &
+            &          ampVisc + half)*(-tanh(slopeVisc*(r(:) - rStrat(1)))**2 + 1)*   &
+            &          (half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r(:) -    &
+            &          rStrat(1) - thickStrat(1))) + half)/ampVisc + slopeVisc*(half*  &
+            &          ampVisc - half)*(-tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1)) &
+            &          )**2 + 1)*(half*ampVisc + (-half*ampVisc + half)*tanh(          &
+            &          slopeVisc*(r(:) - rStrat(1))) + half)/ampVisc)*(-tanh(slopeVisc*&
+            &          (r(:) - rStrat(1)))**2 + 1)/((half*ampVisc + (-half*ampVisc +   &
+            &          half)*tanh(slopeVisc*(r(:) - rStrat(1))) + half)**2*(half*      &
+            &          ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(r(:) - rStrat(1)&
+            &          - thickStrat(1))) + half)) - ampVisc*slopeVisc*(half*ampVisc -  &
+            &          half)*(slopeVisc*(-half*ampVisc + half)*(-tanh(slopeVisc*(      &
+            &          r(:) - rStrat(1)))**2 + 1)*(half*ampVisc + (half*ampVisc - half)&
+            &          *tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1))) + half)/ampVisc &
+            &          + slopeVisc*(half*ampVisc - half)*(-tanh(slopeVisc*(r(:) -      &
+            &          rStrat(1)-thickStrat(1)))**2+1)*(half*ampVisc + (-half*ampVisc  &
+            &          + half)*tanh(slopeVisc*(r(:) - rStrat(1))) + half)/ampVisc)*(   &
+            &          -tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1)))**2 + 1)/((half* &
+            &          ampVisc + (-half*ampVisc + half)*tanh(slopeVisc*(r(:) -         &
+            &          rStrat(1))) + half)*(half*ampVisc + (half*ampVisc - half)*tanh( &
+            &          slopeVisc*(r(:)-rStrat(1)-thickStrat(1))) + half)**2)+ampVisc*( &
+            &          2*slopeVisc**2*(-half*ampVisc + half)*(half*ampVisc - half)*(   &
+            &          -tanh(slopeVisc*(r(:) - rStrat(1)))**2 + 1)*(-tanh(slopeVisc*(  &
+            &          r(:)-rStrat(1)-thickStrat(1)))**2 + 1)/ampVisc - 2*slopeVisc**2 &
+            &          *(-half*ampVisc + half)*(-tanh(slopeVisc*(r(:) - rStrat(1)))**2 &
+            &          + 1)*(half*ampVisc + (half*ampVisc - half)*tanh(slopeVisc*(     &
+            &          r(:)-rStrat(1)-thickStrat(1))) + half)*tanh(slopeVisc*(r(:) -   &
+            &          rStrat(1)))/ampVisc - 2*slopeVisc**2*(half*ampVisc - half)*(    &
+            &          -tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1)))**2 + 1)*(half*  &
+            &          ampVisc + (-half*ampVisc + half)*tanh(slopeVisc*(r(:) -         &
+            &          rStrat(1)))+half)*tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1)))&
+            &          /ampVisc)/((half*ampVisc + (-half*ampVisc + half)*tanh(         &
+            &          slopeVisc*(r(:) - rStrat(1))) + half)*(half*ampVisc + (half*    &
+            &          ampVisc-half)*tanh(slopeVisc*(r(:)-rStrat(1)-thickStrat(1)))    &
+            &          + half))
+
+         case(4) ! Bottom stratified
+            ampVisc  =10.0_cp
+            slopeVisc=30.0_cp
+            if ( rStrat(1) <= r_icb ) then
+               visc(:)=one
+            else
+               visc(:)=(half*(ampVisc-one)*tanh(slopeVisc* &
+               &       (r(:)-rStrat(1)))+half*(ampVisc+one))/ampVisc
+            end if
+            dLvisc(:)=slopeVisc*(half*ampVisc-half)*(-tanh(slopeVisc* &
+            &         (r(:)-rStrat(1)))**2+one)/(half*ampVisc+        &
+            &         (half*ampVisc-half)*tanh(slopeVisc*(r(:)-       &
+            &         rStrat(1)))+half)
+
+            ddLvisc(:)=-slopeVisc**2*(half*ampVisc-half)**2*(-tanh(slopeVisc*(r(:)-    &
+            &          rStrat(1)))**2+one)**2/(half*ampVisc+(half*ampVisc-half)*       &
+            &          tanh(slopeVisc*(r(:)-rStrat(1)))+half)**2-2*slopeVisc**2*(half* &
+            &          ampVisc-half)*(-tanh(slopeVisc*(r(:)-rStrat(1)))**2+one)*tanh(  &
+            &          slopeVisc*(r(:)-rStrat(1)))/(half*ampVisc+(half*ampVisc-half)*  &
+            &          tanh(slopeVisc*(r(:)-rStrat(1)))+half)
+
+         case default ! default: constant kinematic viscosity
+            visc(:)   =one
+            dLvisc(:) =0.0_cp
+            ddLvisc(:)=0.0_cp
+
+      end select
 
       if ( l_anelastic_liquid .or. l_non_adia ) then
          divKtemp0=rho0*kappa*(d2temp0+(beta+dLkappa+two*or1)*temp0*dLtemp0)*sq4pi
@@ -1017,57 +1168,97 @@ contains
 
    end subroutine transportProperties
 !------------------------------------------------------------------------------
-   subroutine getEntropyGradient
+   subroutine getEntropyGradient()
       !
       ! This subroutine allows to calculate the background entropy gradient
       ! in case stable stratification is required
       !
 
-      integer :: n_r
+      integer :: k
 
-      if ( nVarEntropyGrad == 0 ) then ! Default: isentropic
-         dEntropy0(:)=0.0_cp
-         l_non_adia = .false.
-      else if ( nVarEntropyGrad == 1 ) then ! Takehiro
-         if ( rStrat <= r_icb ) then
-            dentropy0(:) = ampStrat
-         else
-            dentropy0(:) = -half*(ampStrat+one)*(one-tanh(slopeStrat*(r(:)-rStrat)))&
-            &              + ampStrat
-         end if
-         l_non_adia = .true.
-      else if ( nVarEntropyGrad == 2 ) then ! Flat + linear
-         if ( rStrat <= r_icb ) then
-            dentropy0(:) = ampStrat
-         else
-            do n_r=1,n_r_max
-               if ( r(n_r) <= rStrat ) then
-                  dentropy0(n_r)=-one
-               else
-                  dentropy0(n_r)=(ampStrat+one)*(r(n_r)-r_cmb)/(r_cmb-rStrat) + &
-                  &              ampStrat
-               end if
+      select case(nVarEntropyGrad)
+
+         case(1) ! Takehiro
+            if ( rStrat(1) <= r_icb .or. rStrat(1) >= r_cmb ) then
+               dentropy0(:) = ampStrat(1)
+            else
+               dentropy0(:) = -half*(ampStrat(1)+one)*(one-tanh(slopeStrat(1)* &
+               &              (r(:)-rStrat(1)))) + ampStrat(1)
+            end if
+            l_non_adia = .true.
+
+         case(2) ! Flat + linear
+            if ( rStrat(1) <= r_icb .or. rStrat(1) >= r_cmb ) then
+               dentropy0(:) = ampStrat(1)
+            else
+               where ( r <= rStrat(1) )
+                  dentropy0 = -one
+               else where
+                  dentropy0 = (ampStrat(1)+one)*(r-r_cmb)/(r_cmb-rStrat(1))+ampStrat(1)
+               end where
+            end if
+            l_non_adia = .true.
+
+         case(3) ! SSL
+            if ( rStrat(1) <= r_icb  .or. rStrat(1) >= r_cmb) then
+               dentropy0(:) = -one
+            else
+               dentropy0(:) = 0.25_cp*(ampStrat(1)+one)*(one+tanh(slopeStrat(1)* &
+               &              (r(:)-rStrat(1))))*(one-tanh(slopeStrat(1)*        &
+               &              (r(:)-rStrat(1)-thickStrat(1)))) - one
+            end if
+            l_non_adia = .true.
+
+         case(4) ! modified Takehiro
+            if ( rStrat(1) <= r_icb .or. rStrat(1) >= r_cmb ) then
+               dentropy0(:) = (r(:)**3-r_cmb**3)/(r_cmb**3-r_icb**3)*(r_icb/r(:))**2
+            else
+               dentropy0(:) = half*(-ampStrat(1)+(r(:)**3-r_cmb**3)/       &
+               &              (r_cmb**3-r_icb**3)*(r_icb/r(:))**2)*        &
+               &              (one-tanh(slopeStrat(1)*(r(:)-rStrat(1)))) + &
+               &              ampStrat(1)
+            end if
+            l_non_adia = .true.
+
+         case(5) ! uniform volumic heat without strat
+            dentropy0(:) = (r(:)**3-r_cmb**3)/(r_cmb**3-r_icb**3)*(r_icb/r(:))**2
+            l_non_adia = .true.
+
+         case(6) ! Chemical heating + linear stratification
+            if ( rStrat(1) <= r_icb .or. rStrat(1) >= r_cmb ) then
+               dentropy0(:) = (r(:)**3-r_cmb**3)/(r_cmb**3-r_icb**3)*(r_icb/r(:))**2
+            else
+               dentropy0(:) = (r(:)**3-r_cmb**3)/(r_cmb**3-r_icb**3)*(r_icb/r(:))**2
+               where ( r >= rStrat(1) )
+                  dentropy0 = dentropy0 + ampStrat(1)*(r-rStrat(1))/(r_cmb-rStrat(1))
+               end where
+            end if
+            l_non_adia = .true.
+
+         case(7) ! N stratified layers, given by arrays
+            dentropy0(:) = -one
+
+            ! Check if bottom SSL exists
+            if ( ampStrat(1) > 0.0_cp ) then
+               dentropy0(:) = dentropy0(:) + (ampStrat(1)+one) *      &
+               &             (one - half * (one-tanh(slopeStrat(1) *  &
+               &                           (rStrat(1) - r(:)))) )
+            end if
+
+            ! Subsequent ones
+            do k=2,size(ampStrat)
+               dentropy0(:) = dentropy0(:) + ( 0.25_cp * (ampStrat(k)+one)* &
+               &              (one+tanh(slopeStrat(k) * (r(:)-rStrat(k))))* &
+               &              (one - tanh(slopeStrat(k) * (r(:) -           &
+               &               rStrat(k) - thickStrat(k))) ) )
             end do
-         end if
-         l_non_adia = .true.
-      else if ( nVarEntropyGrad == 3 ) then ! SSL
-         if ( rStrat <= r_icb ) then
-            dentropy0(:) = -one
-         else
-            dentropy0(:) = 0.25_cp*(ampStrat+one)*(one+tanh(slopeStrat*(r(:)-rStrat)))&
-            &              *(one-tanh(slopeStrat*(r(:)-rStrat-thickStrat)))           &
-            &              - one
-         end if
-         l_non_adia = .true.
-      else if ( nVarEntropyGrad == 4 ) then ! SSL
-         if ( rStrat <= r_icb ) then
-            dentropy0(:) = -one
-         else
-            dentropy0(:) = half*(ampStrat+one)*(one-tanh(slopeStrat*(r(:)-rStrat)))&
-            &              - one
-         end if
-         l_non_adia = .true.
-      end if
+            l_non_adia = .true.
+
+         case default ! Default: isentropic
+            dentropy0(:)=0.0_cp
+            l_non_adia = .false.
+
+      end select
 
    end subroutine getEntropyGradient
 !------------------------------------------------------------------------------
@@ -1122,10 +1313,8 @@ contains
       end if
 
       !-- renormalize
-      do n_r=1,n_r_max
-        workMat(n_r,1)      =rscheme_oc%boundary_fac*workMat(n_r,1)
-        workMat(n_r,n_r_max)=rscheme_oc%boundary_fac*workMat(n_r,n_r_max)
-      end do
+     workMat(:,1)      =rscheme_oc%boundary_fac*workMat(:,1)
+     workMat(:,n_r_max)=rscheme_oc%boundary_fac*workMat(:,n_r_max)
 
       do n_r=1,n_r_max
          workMat_fac(n_r,1)=one/maxval(abs(workMat(n_r,:)))
@@ -1140,29 +1329,22 @@ contains
          workMat(:,n_r)=workMat(:,n_r)*workMat_fac(n_r,2)
       end do
 
-
       call prepare_mat(workMat,n_r_max,n_r_max,workPivot,info)
 
       if ( info /= 0 ) then
          call abortRun('! Singular Matrix in getBackground!')
       end if
 
-      do n_r=2,n_r_max
-         rhs(n_r)=input(n_r)
-      end do
+      rhs(2:n_r_max)=input(2:n_r_max)
       rhs(1)=boundaryVal
 
-      do n_r=1,n_r_max
-         rhs(n_r)=rhs(n_r)*workMat_fac(n_r,1)
-      end do
+      rhs(:)=rhs(:)*workMat_fac(:,1)
 
       !-- Solve for s0:
       call solve_mat(workMat,n_r_max,n_r_max,workPivot,rhs)
 
       !-- Copy result to s0:
-      do n_r=1,n_r_max
-         output(n_r)=rhs(n_r)*workMat_fac(n_r,2)
-      end do
+      output(:)=rhs(:)*workMat_fac(:,2)
 
       !-- Set cheb-modes > n_cheb_max to zero:
       if ( rscheme_oc%n_max < n_r_max ) then

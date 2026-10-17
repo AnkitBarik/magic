@@ -14,11 +14,13 @@ Requirements
 Hard dependencies
 -----------------
 
-* `python <https://www.python.org>`_ 2.7/3.3 or higher.
+* `python <https://www.python.org>`_ 3.3 or higher.
 
-* `matplotlib <http://matplotlib.org>`_ 1.0 or higher.
+* `matplotlib <https://matplotlib.org>`_ 1.0 or higher.
 
-* `scipy <http://www.scipy.org/>`_ 0.10 or higher.
+* `meson <https://mesonbuild.com/meson-python/>`_ 0.10 or higher.
+
+* `scipy <https://www.scipy.org/>`_ 0.10 or higher.
 
 Optional dependencies
 ---------------------
@@ -34,7 +36,7 @@ Optional dependencies
   `orthographic <https://en.wikipedia.org/wiki/Orthographic_projection>`_,
   `Mollweide <https://en.wikipedia.org/wiki/Mollweide_projection>`_, etc.) class 
   will be provided for 2-D surface plotting. Otherwise, the usage of
-  :py:class:`magic.Surf` is limited to the 
+  :py:class:`magic.Surf` is limited to the standalone
   `Hammer projection <https://en.wikipedia.org/wiki/Hammer_projection>`_.
 
 
@@ -61,7 +63,7 @@ the options manually:
    $ cp $MAGIC_HOME/python/magic/magic.cfg.default $MAGIC_HOME/python/magic/magic.cfg
 
 In that file, you can set up the default `matplotlib  <http://matplotlib.org>`_  
-rendering backend (among the possible options: ``TkAgg``, ``GTKAgg``, ``Qt4Agg``, ...).
+rendering backend (among the possible options: ``TkAgg``, ``GTKAgg``, ``Qt5Agg``, ``Qt4Agg``, ...).
 The default configuration is
 
 .. code-block:: python
@@ -172,6 +174,7 @@ If the build was successful, it should display::
    Please wait: building lmrreader_single...
    Please wait: building Legendre transforms...
    Please wait: building vtklib...
+   Please wait: building cylavg...
 
 Once the libraries have been successfully installed, this message won't be displayed
 again, except if you remove the ``*.so`` files that are now present in the
@@ -199,23 +202,25 @@ API of the available classes, as well as some practical examples:
 
      5. To read and analyse the **G_#.TAG** files, see :ref:`here <secPythonGraphFile>`.
 
-     6. To read and analyse movie files **_mov.TAG**, see :ref:`here <secPythonMovieFiles>`.
+     6. To read and analyse the **checkpoint_#.TAG** files, see :ref:`here <secPythonCheckpointFile>`.
 
-     7. To read and analyse coeff files **[V|B|T]_coeff.TAG**, see :ref:`here <secPythonCoeffs>`.
+     7. To read and analyse movie files **_mov.TAG**, see :ref:`here <secPythonMovieFiles>`.
 
-     8. To read and analyse potential files **[V|B|T]_lmr_#.TAG**, see :ref:`here <secPythonPot>`.
+     8. To read and analyse coeff files **[V|B|T]_coeff.TAG**, see :ref:`here <secPythonCoeffs>`.
 
-     9. To read and analyse radial spectra **B[r|p]Spec.TAG**, see :ref:`here <secPythonRSpec>`.
+     9. To read and analyse potential files **[V|B|T]_lmr_#.TAG**, see :ref:`here <secPythonPot>`.
 
-     10. To read and analyse TO outputs, see :ref:`here <secPythonTO>`.
+     10. To read and analyse radial spectra **B[r|p]Spec.TAG**, see :ref:`here <secPythonRSpec>`.
 
-     11. To compare several runs simultaneously, see :ref:`here <secPythonComp>`.
+     11. To read and analyse TO outputs, see :ref:`here <secPythonTO>`.
 
-     12. To transform the graphic files **G_#.TAG** to a file format readable by `paraview <http://www.paraview.org/>`_, `VisIt <https://visit.llnl.gov/>`_ or `mayavi <http://code.enthought.com/projects/mayavi/>`_ and do some fancy 3-D visualisation, see :ref:`here <secPythonParaview>`.
+     12. To compare several runs simultaneously, see :ref:`here <secPythonComp>`.
 
-     13. For additional diagnostics (boundary layer, heat transport, interpolation on cylindrical grids, etc.), see :ref:`here <secPythonMisc>`.
+     13. To transform the graphic files **G_#.TAG** to a file format readable by `paraview <http://www.paraview.org/>`_, `VisIt <https://visit.llnl.gov/>`_ or `mayavi <http://code.enthought.com/projects/mayavi/>`_ and do some fancy 3-D visualisation, see :ref:`here <secPythonParaview>`.
 
-     14. To take a look at the additional useful functions available (derivation, integration, interpolation, etc.), see :ref:`here <secPythonLibs>`.
+     14. For additional diagnostics (boundary layer, heat transport, interpolation on cylindrical grids, etc.), see :ref:`here <secPythonMisc>`.
+
+     15. To take a look at the additional useful functions available (derivation, integration, interpolation, etc.), see :ref:`here <secPythonLibs>`.
 
 
 .. toctree::

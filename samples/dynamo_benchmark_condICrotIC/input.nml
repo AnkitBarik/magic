@@ -8,12 +8,11 @@ n_cheb_ic_max=15,
 /
 &control
  mode        =0,
- tag         ="test",
+ tag         ="start",
  n_time_steps=1000,
  courfac     =2.5D0,
  alffac      =1.0D0,
  dtmax       =1.0D-4,
- n_cour_step =5,
  alpha       =0.6D0,
  runHours    =12,
  runMinutes  =00,
@@ -31,7 +30,7 @@ n_cheb_ic_max=15,
  kbotb       =3
 /
 &start_field
- l_start_file=.FALSE.,
+ l_start_file=.false.,
  start_file  ="NONE",
  init_b1     =3,
  amp_b1      =5,
@@ -44,8 +43,8 @@ n_cheb_ic_max=15,
  n_rsts      =1,
  n_stores    =0,
  runid       ="Benchmark 2",
- l_movie     =.FALSE.,
- l_RMS       =.FALSE.,
+ l_movie     =.false.,
+ l_RMS       =.false.,
 /
 &mantle 
  nRotMa      =0

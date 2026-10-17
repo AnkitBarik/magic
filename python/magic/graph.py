@@ -18,6 +18,8 @@ if buildSo:
 else:
     readingMode = 'python'
 
+print(readingMode)
+
 
 def getGraphEndianness(filename):
     """
@@ -44,7 +46,7 @@ def getGraphEndianness(filename):
     except ValueError:
         f = open(filename, 'rb')
         # Little endian
-        version = np.fromfile(f, 'i4', count=1)[0]
+        version = np.fromfile(f, np.int32, count=1)[0]
         endian = 'l'
         if abs(version) > 100:
             f.close()
@@ -109,9 +111,10 @@ class MagicGraph(MagicSetup):
                 file = '{}{}.{}'.format(self.name, ivar, tag)
                 filename = os.path.join(datadir, file)
             else:
-                files = scanDir('{}*{}'.format(self.name, tag))
+                pattern = os.path.join(datadir, '{}*{}'.format(self.name, tag))
+                files = scanDir(pattern)
                 if len(files) != 0:
-                    filename = os.path.join(datadir, files[-1])
+                    filename = files[-1]
                 else:
                     print('No such tag... try again')
                     return
@@ -121,11 +124,13 @@ class MagicGraph(MagicSetup):
                                     nml='log.{}'.format(tag))
         else:
             if ivar is not None:
-                files = scanDir('{}{}*'.format(self.name, ivar))
-                filename = os.path.join(datadir, files[-1])
+                pattern = os.path.join(datadir, '{}{}*'.format(self.name, ivar))
+                files = scanDir(pattern)
+                filename = files[-1]
             else:
-                files = scanDir('{}*'.format(self.name))
-                filename = os.path.join(datadir, files[-1])
+                pattern = os.path.join(datadir, '{}*'.format(self.name))
+                files = scanDir(pattern)
+                filename = files[-1]
             # Determine the setup
             mask = re.compile(r'.*\.(.*)')
             ending = mask.search(files[-1]).groups(0)[0]
@@ -179,6 +184,7 @@ class MagicGraph(MagicSetup):
             self.vphi = G.vp
             self.pre = G.pre
             self.xi = G.xi
+            self.phase = G.phase
             if self.prmag != 0:
                 self.Br = G.br
                 self.Btheta = G.bt
@@ -221,31 +227,43 @@ class MagicGraph(MagicSetup):
         runID = np.fromfile(f, fmt, count=1)[0]
         fmt = '{}f{}'.format(prefix, suffix)
         self.time = np.fromfile(f, fmt, count=1)[0]
-        self.ra, self.pr, self.raxi, self.sc, self.ek, self.prmag, self.radratio, \
-            self.sigma = np.fromfile(f, fmt, count=8)
+        if version > 13:
+            self.ra, self.pr, self.raxi, self.sc, self.ek, self.stef, self.prmag, \
+                self.radratio, self.sigma = np.fromfile(f, fmt, count=9)
+        else:
+            self.ra, self.pr, self.raxi, self.sc, self.ek, self.prmag, self.radratio, \
+                self.sigma = np.fromfile(f, fmt, count=8)
+            self.stef = 0.
         fmt = '{}i{}'.format(prefix, suffix)
         self.nr, self.ntheta, self.npI, self.minc, self.n_r_ic_max = \
             np.fromfile(f, fmt, count=5)
         if self.npI == self.ntheta*2:
             self.npI = int(self.npI/self.minc)
         self.nphi = self.npI*self.minc+1
-        l_heat, l_chem, l_mag, l_press, l_cond_ic = np.fromfile(f, fmt, count=5)
+        if version > 13:
+            l_heat, l_chem, l_phase, l_mag, l_press, l_cond_ic = \
+                np.fromfile(f, fmt, count=6)
+        else:
+            l_heat, l_chem, l_mag, l_press, l_cond_ic = np.fromfile(f, fmt, count=5)
+            l_phase = False
         fmt = '{}f{}'.format(prefix, suffix)
         self.colatitude = np.fromfile(f, fmt, count=self.ntheta)
         self.radius = np.fromfile(f, fmt, count=self.nr)
-        if ( l_mag > 0 and self.n_r_ic_max > 1 ):
+        if ( l_mag != 0 and self.n_r_ic_max > 1 ):
             self.radius_ic = np.fromfile(f, fmt, count=self.n_r_ic_max)
 
         self.vr = np.zeros((self.npI, self.ntheta, self.nr), self.precision)
         self.vtheta = np.zeros_like(self.vr)
         self.vphi = np.zeros_like(self.vr)
-        if l_heat > 0:
+        if l_heat != 0:
             self.entropy = np.zeros_like(self.vr)
-        if l_chem > 0:
+        if l_chem != 0:
             self.xi = np.zeros_like(self.vr)
-        if l_press > 0:
+        if l_phase != 0:
+            self.phase = np.zeros_like(self.vr)
+        if l_press != 0:
             self.pre = np.zeros_like(self.vr)
-        if l_mag > 0:
+        if l_mag != 0:
             self.Br = np.zeros_like(self.vr)
             self.Btheta = np.zeros_like(self.vr)
             self.Bphi = np.zeros_like(self.vr)
@@ -263,16 +281,19 @@ class MagicGraph(MagicSetup):
             self.vtheta[:, :, i] = dat.reshape(self.npI, self.ntheta)
             dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
             self.vphi[:, :, i] = dat.reshape(self.npI, self.ntheta)
-            if l_heat > 0:
+            if l_heat != 0:
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
                 self.entropy[:, :, i] = dat.reshape(self.npI, self.ntheta)
-            if l_chem > 0:
+            if l_chem != 0:
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
                 self.xi[:, :, i] = dat.reshape(self.npI, self.ntheta)
-            if l_press > 0:
+            if l_phase != 0:
+                dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
+                self.phase[:, :, i] = dat.reshape(self.npI, self.ntheta)
+            if l_press != 0:
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
                 self.pre[:, :, i] = dat.reshape(self.npI, self.ntheta)
-            if l_mag > 0:
+            if l_mag != 0:
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
                 self.Br[:, :, i] = dat.reshape(self.npI, self.ntheta)
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
@@ -281,7 +302,7 @@ class MagicGraph(MagicSetup):
                 self.Bphi[:, :, i] = dat.reshape(self.npI, self.ntheta)
 
         # Inner core
-        if ( l_mag > 0 and self.n_r_ic_max > 1 ):
+        if ( l_mag != 0 and self.n_r_ic_max > 1 ):
             for i in range(self.n_r_ic_max):
                 dat = np.fromfile(f, fmt, count=self.ntheta*self.npI)
                 self.Br_ic[:, :, i] = dat.reshape(self.npI, self.ntheta)

@@ -22,6 +22,7 @@ class MagicRadial(MagicSetup):
         * Variable kinematic viscosity: :ref:`varVisc.TAG <secVarViscFile>`
         * Diagnostic parameters: :ref:`parR.TAG <secPaRfile>`
         * Power budget: :ref:`powerR.TAG <secPowerRfile>`
+        * Phase field: :ref:`phiR.TAG <secPhiRfile>`
         * Heat fluxes: :ref:`fluxesR.TAG <secFluxesRfile>`
         * Mean entropy, temperature and pressure: :ref:`heatR.TAG <secHeatRfile>`
         * Radial profiles used for boundary layers: :ref:`bLayersR.TAG <secBLayersRfile>`
@@ -75,6 +76,8 @@ class MagicRadial(MagicSetup):
             self.name = 'heatR'
         elif field in ('perpParR'):
             self.name = 'perpParR'
+        elif field in ('phiR', 'phaseR'):
+            self.name = 'phiR'
         else:
             print('No corresponding radial profiles... Try again')
 
@@ -131,7 +134,7 @@ class MagicRadial(MagicSetup):
                 # Determine the setup
                 mask = re.compile(r'{}\.(.*)'.format(self.name))
                 ending = mask.search(files[-1]).groups(0)[0]
-                if os.path.exists('log.{}'.format(ending)):
+                if os.path.exists(os.path.join(datadir, 'log.{}'.format(ending))):
                     try:
                         MagicSetup.__init__(self, datadir=datadir, quiet=True,
                                             nml='log.{}'.format(ending))
@@ -146,6 +149,8 @@ class MagicRadial(MagicSetup):
                 else:
                     data = fast_read(filename, skiplines=0)
 
+                if not hasattr(self, 'stop_time'):
+                    self.stop_time = self.start_time
                 radlut = RadLookUpTable(data, self.name, self.start_time,
                                         self.stop_time)
         else:
@@ -162,22 +167,24 @@ class MagicRadial(MagicSetup):
                 filename = os.path.join(datadir, file)
                 if not quiet:
                     print('reading {}'.format(filename))
-                if self.name == 'varCond' or self.name == 'varVisc' or \
-                   self.name == 'varDiff' or self.name == 'anel':
-                    data = fast_read(filename, skiplines=1)
-                else:
-                    data = fast_read(filename, skiplines=0)
+                if os.path.exists(filename):
+                    if self.name == 'varCond' or self.name == 'varVisc' or \
+                       self.name == 'varDiff' or self.name == 'anel':
+                        data = fast_read(filename, skiplines=1)
+                    else:
+                        data = fast_read(filename, skiplines=0)
 
-                if k == 0:
-                    radlut = RadLookUpTable(data, self.name, nml.start_time,
-                                            nml.stop_time)
-                else:
-                    radlut += RadLookUpTable(data, self.name, nml.start_time,
-                                             nml.stop_time)
+                    if k == 0:
+                        radlut = RadLookUpTable(data, self.name, nml.start_time,
+                                                nml.stop_time)
+                    else:
+                        radlut += RadLookUpTable(data, self.name, nml.start_time,
+                                                 nml.stop_time)
 
         # Copy look-up table arguments into MagicRadial object
-        for attr in radlut.__dict__:
-            setattr(self, attr, radlut.__dict__[attr])
+        if 'radlut' in locals():
+            for attr in radlut.__dict__:
+                setattr(self, attr, radlut.__dict__[attr])
 
         # Plotting function
         if iplot:
@@ -195,15 +202,13 @@ class MagicRadial(MagicSetup):
         if self.name == 'eKinR':
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.plot(x_axis, self.ekin_pol, ls='-', c='#30a2da',
-                    label='ekin pol')
-            ax.plot(x_axis, self.ekin_tor, ls='-', c='#fc4f30',
-                    label='ekin tor')
-            ax.plot(x_axis, self.ekin_pol_axi, ls='--', c='#30a2da',
+            ax.plot(x_axis, self.ekin_pol, ls='-', c='C0', label='ekin pol')
+            ax.plot(x_axis, self.ekin_tor, ls='-', c='C1', label='ekin tor')
+            ax.plot(x_axis, self.ekin_pol_axi, ls='--', c='C0',
                     label='ekin pol axi')
-            ax.plot(x_axis, self.ekin_tor_axi, ls='--', c='#fc4f30',
+            ax.plot(x_axis, self.ekin_tor_axi, ls='--', c='C1',
                     label='ekin tor axi')
-            ax.plot(x_axis, self.ekin_pol+self.ekin_tor, ls='-', c='#31363B',
+            ax.plot(x_axis, self.ekin_pol+self.ekin_tor, ls='-', c='0.25',
                     label='ekin tot')
             ax.set_xlabel('Radius')
             ax.set_ylabel('Kinetic energy')
@@ -213,15 +218,13 @@ class MagicRadial(MagicSetup):
         elif self.name == 'eMagR':
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.plot(x_axis, self.emag_pol, ls='-', c='#30a2da',
-                    label='emag pol')
-            ax.plot(x_axis, self.emag_tor, ls='-', c='#fc4f30',
-                    label='emag tor')
-            ax.plot(x_axis, self.emag_pol_axi, ls='--', c='#30a2da',
+            ax.plot(x_axis, self.emag_pol, ls='-', c='C0', label='emag pol')
+            ax.plot(x_axis, self.emag_tor, ls='-', c='C1', label='emag tor')
+            ax.plot(x_axis, self.emag_pol_axi, ls='--', c='C0',
                     label='emag pol axi')
-            ax.plot(x_axis, self.emag_tor_axi, ls='--', c='#fc4f30',
+            ax.plot(x_axis, self.emag_tor_axi, ls='--', c='C1',
                     label='emag tor axi')
-            ax.plot(x_axis, self.emag_pol+self.emag_tor, ls='-', c='#31363B',
+            ax.plot(x_axis, self.emag_pol+self.emag_tor, ls='-', c='0.25',
                     label='emag tot')
 
             ax.legend(loc='best', frameon=False)
@@ -231,7 +234,7 @@ class MagicRadial(MagicSetup):
             if hasattr(self, 'con_radratio'):
                 if self.nVarCond == 2:
                     ax.axvline(self.con_radratio*self.radius[0], color='k',
-                              linestyle='--')
+                               linestyle='--')
             fig.tight_layout()
 
             fig = plt.figure()
@@ -285,7 +288,7 @@ class MagicRadial(MagicSetup):
             ax = fig.add_subplot(111)
             ax.plot(x_axis, self.dLkappa, label='dLkappa')
             ax.set_xlabel('Radius')
-            ax.set_ylabel('$d\ln\kappa / dr$')
+            ax.set_ylabel(r'$d\ln\kappa / dr$')
             ax.set_xlim(x_axis.min(), x_axis.max())
             ax.legend(loc='best', frameon=False)
             fig.tight_layout()
@@ -295,7 +298,7 @@ class MagicRadial(MagicSetup):
             ax.semilogy(x_axis, self.dynVisc, label='dyn. visc')
             ax.semilogy(x_axis, self.kinVisc, label='kin. visc')
             ax.semilogy(x_axis, self.prandtl, label='Prandtl')
-            if self.mode not in (1,5):
+            if self.mode not in (1, 5):
                 ax.semilogy(x_axis, self.prandtlmag, label='Pm')
             ax.semilogy(x_axis, self.ekman, label='Ekman')
             ax.set_ylabel('Thermal properties')
@@ -355,13 +358,25 @@ class MagicRadial(MagicSetup):
             fig = plt.figure()
             ax = fig.add_subplot(111)
             ax.plot(x_axis, self.entropy, label='Entropy')
-            ax.twinx()
-            ax.plot(x_axis, self.entropy_SD/self.entropy_SD.max(),
-                    label='Standard dev. of Entropy')
+            ax1 = ax.twinx()
+            ax1.plot(x_axis, self.entropy_SD, color='C1',
+                     label='Standard dev. of Entropy')
             ax.set_xlabel('Radius')
             ax.set_xlim(x_axis.min(), x_axis.max())
             ax.legend(loc='best', frameon=False)
             fig.tight_layout()
+
+            if abs(self.xi).max() > 0.:
+                fig = plt.figure()
+                ax = fig.add_subplot(111)
+                ax.plot(x_axis, self.xi, label='Composition')
+                ax1 = ax.twinx()
+                ax1.plot(x_axis, self.xi_SD, color='C1',
+                         label='Standard dev. of Composition')
+                ax.set_xlabel('Radius')
+                ax.set_xlim(x_axis.min(), x_axis.max())
+                ax.legend(loc='best', frameon=False)
+                fig.tight_layout()
 
             fig = plt.figure()
             ax = fig.add_subplot(111)
@@ -472,38 +487,48 @@ class MagicRadial(MagicSetup):
             ax.legend(loc='best', frameon=False)
             ax.set_xlim(x_axis[-1], x_axis[0])
             fig.tight_layout()
+        elif self.name == 'phiR':
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.plot(x_axis, self.phase)
+            ax.fill_between(x_axis, self.phase-self.phase_SD,
+                            self.phase+self.phase_SD,
+                            color='C0', alpha=0.3)
+            ax.set_xlim(x_axis[-1], x_axis[0])
+            ax.set_xlabel('Radius')
+            ax.set_ylabel('Phase field')
+            fig.tight_layout()
         elif self.name == 'heatR':
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.plot(x_axis, self.entropy, label='s', color='C0')
+            if self.DissNb == 0.:
+                label = 'T'
+            else:
+                label = 's'
+            ax.plot(x_axis, self.entropy, label=label, color='C0')
             if hasattr(self, 'entropy_SD'):
                 ax.fill_between(x_axis, self.entropy-self.entropy_SD,
                                 self.entropy+self.entropy_SD,
                                 color='C0', alpha=0.3)
-            if self.DissNb > 0:
-                ax.plot(x_axis, self.temperature, label='T', color='C1')
-                if hasattr(self, 'temperature_SD'):
-                    ax.fill_between(x_axis, self.temperature-self.temperature_SD,
-                                    self.temperature+self.temperature_SD,
-                                    color='C1', alpha=0.3)
-            if self.xi.max() > 1e-10:
+            #if self.DissNb > 0:
+            #    ax.plot(x_axis, self.temperature, label='T', color='C1')
+            #    if hasattr(self, 'temperature_SD'):
+            #        ax.fill_between(x_axis, self.temperature-self.temperature_SD,
+            #                        self.temperature+self.temperature_SD,
+            #                       color='C1', alpha=0.3)
+            if abs(self.xi).max() > 1e-10:
                 ax.plot(x_axis, self.xi, label='xi', color='C2')
                 if hasattr(self, 'xi_SD'):
                     ax.fill_between(x_axis, self.xi-self.xi_SD,
                                     self.xi+self.xi_SD,
                                     color='C2', alpha=0.3)
             ax.set_xlabel('Radius')
-            ax.set_ylabel('Temperature, Entropy, Composition')
+            if self.DissNb == 0:
+                ax.set_ylabel('Temperature, Composition')
+            else:
+                ax.set_ylabel('Entropy, Composition')
             ax.legend(loc='best', frameon=False)
             ax.set_xlim(x_axis[-1], x_axis[0])
-            fig.tight_layout()
-
-            fig1 = plt.figure()
-            ax1 = fig1.add_subplot(111)
-            ax1.plot(x_axis, self.pressure, label='p')
-            ax1.set_xlabel('Radius')
-            ax1.set_ylabel('Pressure')
-            ax1.set_xlim(x_axis[-1], x_axis[0])
             fig.tight_layout()
         elif self.name == 'perpParR':
             fig = plt.figure()
@@ -537,7 +562,7 @@ class MagicRadial(MagicSetup):
         if hasattr(self, 'con_radratio'):
             if self.nVarCond == 2:
                 ax.axvline(self.con_radratio*self.radius[0], color='k',
-                          linestyle='--')
+                           linestyle='--')
 
 
 class RadLookUpTable:
@@ -694,13 +719,23 @@ class RadLookUpTable:
                 self.duhdr = data[:, 4]
                 self.dissS = data[:, 5]
             elif data.shape[1] == 9:
-                self.uh =data[:, 2]
-                self.duhdr =data[:, 3]
-                self.dissS =data[:, 4]
-                self.entropy_SD =data[:, 5]
-                self.uh_SD =data[:, 6]
-                self.duhdr_SD =data[:, 7]
-                self.dissS_SD =data[:, 8]
+                self.uh = data[:, 2]
+                self.duhdr = data[:, 3]
+                self.dissS = data[:, 4]
+                self.entropy_SD = data[:, 5]
+                self.uh_SD = data[:, 6]
+                self.duhdr_SD = data[:, 7]
+                self.dissS_SD = data[:, 8]
+            elif data.shape[1] == 11:
+                self.xi = data[:, 2]
+                self.uh = data[:, 3]
+                self.duhdr = data[:, 4]
+                self.dissS = data[:, 5]
+                self.entropy_SD = data[:, 6]
+                self.xi_SD = data[:, 7]
+                self.uh_SD = data[:, 8]
+                self.duhdr_SD = data[:, 8]
+                self.dissS_SD = data[:, 9]
         elif self.name == 'fluxesR':
             self.radius = data[:, 0]
             self.fcond = data[:, 1]
@@ -731,6 +766,10 @@ class RadLookUpTable:
                 self.pressure_SD = data[:, 8]
                 self.density_SD = data[:, 9]
                 self.xi_SD = data[:, 10]
+        elif self.name == 'phiR':
+            self.radius = data[:, 0]
+            self.phase = data[:, 1]
+            self.phase_SD = data[:, 2]
         elif self.name == 'perpParR':
             self.radius = data[:, 0]
             self.Eperp = data[:, 1]
@@ -753,12 +792,12 @@ class RadLookUpTable:
         out = copy.deepcopy(new)
         if self.start_time is not None:
             fac_old = self.stop_time-self.start_time
-            out.start_time = self.start_time
+            out.start_time = min(self.start_time, new.start_time)
         else:
             fac_old = 0.
         if new.stop_time is not None:
             fac_new = new.stop_time-new.start_time
-            out.stop_time = new.stop_time
+            out.stop_time = max(self.stop_time, new.stop_time)
         else:
             fac_new = 0.
         if fac_old != 0 or fac_new != 0:
@@ -769,7 +808,7 @@ class RadLookUpTable:
         n_r_new = len(new.radius)
         n_r_old = len(self.radius)
 
-        if n_r_new == n_r_old:
+        if n_r_new == n_r_old and abs(self.radius[10]-new.radius[10]) <= 1e-8:
             for attr in new.__dict__.keys():
                 if attr not in ['radius', 'name', 'start_time', 'stop_time']:
                     # Only stack if both new and old have the attribute available

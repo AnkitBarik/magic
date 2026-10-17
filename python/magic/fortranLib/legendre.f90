@@ -1,52 +1,62 @@
 module legendre
 
+   use iso_c_binding, only: sp => c_float, dp => c_double
+
    implicit none
 
    integer :: lm_max, m_max
    integer :: l_max, minc, n_m_max
    integer :: n_theta_max, n_phi_max
-   real(kind=8), allocatable :: Plm(:,:)
-   real(kind=8), allocatable :: wPlm(:,:)
-   real(kind=8), allocatable :: wdPlm(:,:)
-   real(kind=8), allocatable :: dPlm(:,:)
-   real(kind=8), allocatable :: dPhi(:,:)
-   real(kind=8), allocatable :: sinTh(:)
+   real(dp), allocatable :: Plm(:,:)
+   real(dp), allocatable :: wPlm(:,:)
+   real(dp), allocatable :: wdPlm(:,:)
+   real(dp), allocatable :: dPlm(:,:)
+   real(dp), allocatable :: dPhi(:,:)
+   real(dp), allocatable :: sinTh(:)
+   real(dp), allocatable ::  gauss(:)
    integer, allocatable :: lStart(:)
    integer, allocatable :: lStop(:)
    logical, allocatable :: lmOdd(:)
 
 contains
 
-   subroutine init(l_max_in,minc_in,lm_max_in,n_theta_max_in)
+   subroutine init(l_max_in,minc_in,n_theta_max_in,m_max_in)
 
       !-- Input variables
       integer, intent(in) :: l_max_in ! Spherical harmonic order
       integer, intent(in) :: minc_in  ! Azimuthal symmetry
       integer, intent(in) :: n_theta_max_in ! Number of latitudinal grid point
-      integer, intent(in) :: lm_max_in ! lm max
+      integer, intent(in) :: m_max_in
 
       !-- Local variables:
-      integer ::  lm, lmP, l, m, lmP_max
+      integer ::  lm, l, m
       integer :: n_theta
-      real(kind=8) :: colat, dpi
-      real(kind=8), allocatable ::  gauss(:)
-      real(kind=8), allocatable :: plma(:),dtheta_plma(:)
+      real(dp) :: colat, dpi
+      real(dp), allocatable :: plma(:),dtheta_plma(:)
 
       dpi=4.d0*atan(1.d0)
 
       l_max = l_max_in
       minc = minc_in
-      lm_max = lm_max_in
       n_theta_max = n_theta_max_in
       n_phi_max = n_theta_max*2/minc
-      m_max = (l_max/minc)*minc
+      m_max = m_max_in
       n_m_max = m_max/minc+1
-      lmP_max = lm_max+n_m_max
 
-      if ( allocated(plma) ) deallocate( gauss, plma, dtheta_plma)
+      !-- Number of l/m combinations
+      lm_max=0
+      do m=0,m_max,minc
+         do l=m,l_max
+            lm_max = lm_max+1
+         end do
+      end do
+
+      if ( allocated(gauss) ) deallocate( gauss )
+      if ( allocated(plma) ) deallocate( plma )
+      if ( allocated(dtheta_plma) ) deallocate( dtheta_plma )
       allocate(gauss(n_theta_max))
-      allocate(plma(1:lmP_max))
-      allocate(dtheta_plma(1:lmP_max))
+      allocate(plma(1:lm_max))
+      allocate(dtheta_plma(1:lm_max))
 
       if ( allocated(Plm) ) deallocate( Plm, wPlm, dPlm, wdPlm, dPhi, sinTh)
       allocate(Plm(1:lm_max,1:n_theta_max/2))
@@ -61,22 +71,19 @@ contains
       !-- Get Plm and dPlm
       do n_theta=1,n_theta_max/2  ! Loop over colat in NHS
          colat = sinTh(n_theta)
-         call plm_theta(colat,l_max+1,m_max,minc,plma,dtheta_plma,lmP_max)
+         call plm_theta(colat,l_max,m_max,minc,plma,dtheta_plma,lm_max)
          lm = 0
-         lmP = 0
          do m=0,m_max,minc
             do l=m,l_max
                lm = lm+1
-               lmP = lmP+1
-               Plm(lm,n_theta)  = (-1.d0)**(real(m,kind=8))*plma(lmP)
+               Plm(lm,n_theta)  = (-1.d0)**(real(m,dp))*plma(lm)
                ! True theta derivative !!!
-               dPlm(lm,n_theta) = (-1.d0)**(real(m,kind=8))*dtheta_plma(lmP)/sin(colat)
+               dPlm(lm,n_theta) = (-1.d0)**(real(m,dp))*dtheta_plma(lm)/sin(colat)
                ! Add the theta dependence in dPhi to simplify the output
-               dPhi(lm,n_theta) = real(m,kind=8)/sin(colat)
+               dPhi(lm,n_theta) = real(m,dp)/sin(colat)
                wPlm(lm,n_theta) = 2.d0*dpi*gauss(n_theta)*Plm(lm,n_theta)
                wdPlm(lm,n_theta) = 2.d0*dpi*gauss(n_theta)*dPlm(lm,n_theta)
             end do
-            lmP = lmP+1
          end do
       end do
 
@@ -98,21 +105,21 @@ contains
       integer, intent(in) :: n_theta_max
 
       !-- Output variable
-      real(kind=8), intent(out) :: theta_ord(n_theta_max),gauss(n_theta_max)
+      real(dp), intent(out) :: theta_ord(n_theta_max),gauss(n_theta_max)
 
       !--Local variables
       integer ::M,I,J
-      real(kind=8) :: dpi,XXM,XXL,EPS,ZZ,ZZ1
-      real(kind=8) :: P1,P2,P3,PP
+      real(dp) :: dpi,XXM,XXL,EPS,ZZ,ZZ1
+      real(dp) :: P1,P2,P3,PP
 
       dpi=4.d0*atan(1.d0)
       M=(n_theta_max+1)/2
       XXM=0.d0
       XXL=1.d0
-      EPS=3.D-14
+      EPS=10.0d0*epsilon(XXL)
 
       do I=1,M
-         ZZ=cos( dpi*( (real(I,kind=8)-0.25D0)/(real(n_theta_max,kind=8)+0.5D0)) )
+         ZZ=cos( dpi*( (real(I,dp)-0.25D0)/(real(n_theta_max,dp)+0.5D0)) )
 
          ZZ1=0
          do while (abs(ZZ-ZZ1)>EPS)
@@ -121,9 +128,9 @@ contains
             do J=1,n_theta_max
                P3=P2
                P2=P1
-               P1=( real(2*J-1,kind=8)*ZZ*P2-real(J-1,kind=8)*P3 )/real(J,kind=8)
+               P1=( real(2*J-1,dp)*ZZ*P2-real(J-1,dp)*P3 )/real(J,dp)
             end do
-            PP=real(n_theta_max,kind=8)*(ZZ*P1-P2)/(ZZ*ZZ-1.D0)
+            PP=real(n_theta_max,dp)*(ZZ*P1-P2)/(ZZ*ZZ-1.D0)
             ZZ1=ZZ
             ZZ=ZZ1-P1/PP
          end do
@@ -137,31 +144,31 @@ contains
    end subroutine gauleg
 !------------------------------------------------------------------------------
    subroutine plm_theta(theta,max_degree,max_order,m0,plma,dtheta_plma,ndim_plma)
-        
+
       !-- Input variables
-      real(kind=8), intent(in) :: theta
-      integer,      intent(in) :: max_degree
-      integer,      intent(in) :: max_order
-      integer,      intent(in) :: m0
-      integer,      intent(in) :: ndim_plma
+      integer :: ndim_plma
+      real(dp), intent(in) :: theta
+      integer,  intent(in) :: max_degree
+      integer,  intent(in) :: max_order
+      integer,  intent(in) :: m0
 
       !-- Output variables
-      real(kind=8), intent(out) :: plma(ndim_plma)
-      real(kind=8), intent(out) :: dtheta_plma(ndim_plma)
+      real(dp), intent(out) :: plma(ndim_plma)
+      real(dp), intent(out) :: dtheta_plma(ndim_plma)
 
       !-- Local variables
-      real(kind=8) :: sq2,dnorm,fac,plm0,plm1,plm2
+      real(dp) :: sq2,dnorm,fac,plm0,plm1,plm2
       integer :: l,m,j,pos
-       
+
       sq2=sqrt(2.d0)
       dnorm = 1.d0/sqrt(16.d0*atan(1.0d0))
 
       pos=0
       do m=0,max_order,m0
-          
+
          fac=1.d0
          do j=3,2*m+1,2
-            fac=fac*real(j,kind=8)/real(j-1,kind=8)
+            fac=fac*real(j,dp)/real(j-1,dp)
          end do
 
          plm0=sqrt(fac)
@@ -170,82 +177,82 @@ contains
          elseif( m /= 0 ) then
             plm0=0.d0
          endif
-          
+
          l=m
          pos=pos+1
          plma(pos) = dnorm*plm0
-          
+
          plm1=0.d0
-          
+
          do l=m+1,max_degree
             plm2=plm1
             plm1=plm0
-            plm0= cos(theta)* sqrt( real( (2*l-1)*(2*l+1), kind=8 ) /        &
-            &                      real( (l-m)*(l+m), kind=8 )  ) * plm1 -   &
-            &                sqrt( real( (2*l+1)*(l+m-1)*(l-m-1), kind=8 ) / &
-            &                      real( (2*l-3)*(l-m)*(l+m), kind=8 ) ) * plm2
-             
+            plm0= cos(theta)* sqrt( real( (2*l-1)*(2*l+1), dp ) /        &
+            &                      real( (l-m)*(l+m), dp )  ) * plm1 -   &
+            &                sqrt( real( (2*l+1)*(l+m-1)*(l-m-1), dp ) / &
+            &                      real( (2*l-3)*(l-m)*(l+m), dp ) ) * plm2
+
             pos=pos+1
             plma(pos) = dnorm*plm0
-              
+
          end do
 
          l=max_degree+1
          plm2=plm1
          plm1=plm0
-         plm0= cos(theta)* sqrt( real( (2*l-1)*(2*l+1), kind=8 ) /        &
-         &                      real( (l-m)*(l+m), kind=8 )  ) * plm1 -   &
-         &                sqrt( real( (2*l+1)*(l+m-1)*(l-m-1), kind=8 ) / &
-         &                      real( (2*l-3)*(l-m)*(l+m), kind=8 ) ) * plm2
+         plm0= cos(theta)* sqrt( real( (2*l-1)*(2*l+1), dp ) /        &
+         &                      real( (l-m)*(l+m), dp )  ) * plm1 -   &
+         &                sqrt( real( (2*l+1)*(l+m-1)*(l-m-1), dp ) / &
+         &                      real( (2*l-3)*(l-m)*(l+m), dp ) ) * plm2
          dtheta_plma(pos)=dnorm*plm0
       end do    ! loop over order !
-       
+
       pos=0
       do m=0,max_order,m0
          l=m
          pos=pos+1
          if ( m < max_degree ) then
-            dtheta_plma(pos)= l/sqrt(real(2*l+3,kind=8)) * plma(pos+1)
+            dtheta_plma(pos)= l/sqrt(real(2*l+3,dp)) * plma(pos+1)
          else
-            dtheta_plma(pos)= l/sqrt(real(2*l+3,kind=8)) * dtheta_plma(pos)
+            dtheta_plma(pos)= l/sqrt(real(2*l+3,dp)) * dtheta_plma(pos)
          end if
-              
+
          do l=m+1,max_degree-1
             pos=pos+1
-            dtheta_plma(pos)= l*sqrt( real((l+m+1)*(l-m+1),kind=8) / &
-            &                         real((2*l+1)*(2*l+3),kind=8)   &
-            &                                     ) * plma(pos+1)  - &
-            &                 (l+1)*sqrt( real((l+m)*(l-m),kind=8) / &
-            &                         real((2*l-1)*(2*l+1),kind=8)   &
+            dtheta_plma(pos)= l*sqrt( real((l+m+1)*(l-m+1),dp) / &
+            &                         real((2*l+1)*(2*l+3),dp)   &
+            &                                 ) * plma(pos+1)  - &
+            &                 (l+1)*sqrt( real((l+m)*(l-m),dp) / &
+            &                         real((2*l-1)*(2*l+1),dp)   &
             &                                    ) * plma(pos-1)
          end do ! loop over degree
 
          if ( m < max_degree ) then
             l=max_degree
             pos=pos+1
-            dtheta_plma(pos)= l*sqrt( real((l+m+1)*(l-m+1),kind=8) / &
-            &                         real((2*l+1)*(2*l+3),kind=8)   &
-            &                       ) * dtheta_plma(pos)  -          &
-            &                 (l+1)*sqrt( real((l+m)*(l-m),kind=8) / &
-            &                         real((2*l-1)*(2*l+1),kind=8)   &
+            dtheta_plma(pos)= l*sqrt( real((l+m+1)*(l-m+1),dp) / &
+            &                         real((2*l+1)*(2*l+3),dp)   &
+            &                   ) * dtheta_plma(pos)  -          &
+            &                 (l+1)*sqrt( real((l+m)*(l-m),dp) / &
+            &                         real((2*l-1)*(2*l+1),dp)   &
             &                           ) * plma(pos-1)
          end if
       end do ! loop over order
-        
+
    end subroutine plm_theta
 !------------------------------------------------------------------------------
    subroutine specspat_scal(inputLM, br, n_th, n_ph)
 
       !-- Input variables
       integer :: n_th, n_ph
-      complex(kind=4), intent(in) :: inputLM(*)
+      complex(sp), intent(in) :: inputLM(*)
 
       !-- Output variable
-      complex(kind=8), intent(out) :: br(n_ph,n_th)
+      complex(dp), intent(out) :: br(n_ph,n_th)
 
       !-- Local variables
       integer :: nThetaNHS,nThetaN,nThetaS,n_m,lm,lms, n_m_max_loc
-      complex(kind=8) :: s12,z12
+      complex(dp) :: s12,z12
 
       if ( n_ph == 1 ) then ! Axisymmetric case
          n_m_max_loc = 1
@@ -289,14 +296,14 @@ contains
 
       !-- Input variables
       integer :: n_th, n_ph
-      complex(kind=4), intent(in) :: inputLM(*)
+      complex(sp), intent(in) :: inputLM(*)
 
       !-- Output variable
-      complex(kind=8), intent(out) :: dpoldt(n_ph,n_th)
+      complex(dp), intent(out) :: dpoldt(n_ph,n_th)
 
       !-- Local variables
       integer :: nThetaNHS,nThetaN,nThetaS,n_m,lm,lms, n_m_max_loc
-      complex(kind=8) :: s12,z12
+      complex(dp) :: s12,z12
 
       if ( n_ph == 1 ) then ! Axisymmetric case
          n_m_max_loc = 1
@@ -340,14 +347,14 @@ contains
 
       !-- Input variables
       integer :: n_th, n_ph
-      complex(kind=4), intent(in) :: inputLM(*)
+      complex(sp), intent(in) :: inputLM(*)
 
       !-- Output variable
-      complex(kind=8), intent(out) :: dpoldp(n_ph,n_th)
+      complex(dp), intent(out) :: dpoldp(n_ph,n_th)
 
       !-- Local variables
       integer :: nThetaNHS,nThetaN,nThetaS,n_m,lm,lms, n_m_max_loc
-      complex(kind=8) :: s12,z12,ii
+      complex(dp) :: s12,z12,ii
 
       ii = (0.d0, 1.d0)
 
@@ -392,15 +399,15 @@ contains
    subroutine specspat_equat_scal(inputLM, br)
 
       !-- Input variables
-      complex(kind=4), intent(in) :: inputLM(*)
+      complex(sp), intent(in) :: inputLM(*)
 
       !-- Output variable
-      complex(kind=8), intent(inout) :: br(*)
+      complex(dp), intent(inout) :: br(*)
 
       !-- Local variables
       integer :: nThetaNHS,n_m,lm,lms
       integer :: shapePlm(2)
-      complex(kind=8) :: s12,z12
+      complex(dp) :: s12,z12
 
       shapePlm = shape(Plm)
       nThetaNHS = shapePlm(2)
@@ -428,18 +435,18 @@ contains
 
       !-- Input variables
       integer :: n_ph, n_th
-      complex(kind=4), intent(in) :: dpoldrLM(*)
-      complex(kind=4), intent(in) :: torLM(*)
+      complex(sp), intent(in) :: dpoldrLM(*)
+      complex(sp), intent(in) :: torLM(*)
 
       !-- Output variables
-      complex(kind=8), intent(out) :: bt(n_ph,n_th)
-      complex(kind=8), intent(out) :: bp(n_ph,n_th)
+      complex(dp), intent(out) :: bt(n_ph,n_th)
+      complex(dp), intent(out) :: bp(n_ph,n_th)
 
       !-- Local variables
       integer :: nThetaNHS,nThetaN,nThetaS,n_m,lm,lms,n_m_max_loc
-      real(kind=8), allocatable :: PlmG(:), PlmC(:)
-      complex(kind=8), allocatable :: vhG(:), vhC(:)
-      complex(kind=8) :: vhN1,vhS1,vhN2,vhS2, ii
+      real(dp), allocatable :: PlmG(:), PlmC(:)
+      complex(dp), allocatable :: vhG(:), vhC(:)
+      complex(dp) :: vhN1,vhS1,vhN2,vhS2, ii
 
       if ( n_ph == 1 ) then ! Axisymmetric case
          n_m_max_loc = 1
@@ -523,19 +530,19 @@ contains
    subroutine specspat_equat_vec(dpoldrLM, torLM, bt, bp)
 
       !-- Input variables
-      complex(kind=4), intent(in) :: dpoldrLM(*)
-      complex(kind=4), intent(in) :: torLM(*)
+      complex(sp), intent(in) :: dpoldrLM(*)
+      complex(sp), intent(in) :: torLM(*)
 
       !-- Output variables
-      complex(kind=8), intent(inout) :: bt(*)
-      complex(kind=8), intent(inout) :: bp(*)
+      complex(dp), intent(inout) :: bt(*)
+      complex(dp), intent(inout) :: bp(*)
 
       !-- Local variables
       integer :: nThetaNHS,n_m,lm,lms
       integer :: shapePlm(2)
-      real(kind=8) :: PlmG(lm_max), PlmC(lm_max)
-      complex(kind=8) :: vhG(lm_max), vhC(lm_max)
-      complex(kind=8) :: vhN1,vhS1,vhN2,vhS2, ii
+      real(dp) :: PlmG(lm_max), PlmC(lm_max)
+      complex(dp) :: vhG(lm_max), vhC(lm_max)
+      complex(dp) :: vhN1,vhS1,vhN2,vhS2, ii
 
       ii = (0.0d0, 1.0d0)
 
@@ -548,7 +555,6 @@ contains
       end do
 
       do n_m=1,n_m_max
-
          lms=lStop(n_m)
          do lm=lStart(n_m),lms-1,2
             PlmG(lm)=dPlm(lm,nThetaNHS)-dPhi(lm,nThetaNHS)*Plm(lm,nThetaNHS)
@@ -600,19 +606,19 @@ contains
 
       !-- Input variables
       integer :: n_ph, lm_max
-      complex(kind=8), intent(in) :: input(n_ph,*)
+      complex(dp), intent(in) :: input(n_ph,*)
 
       !-- Output variables
-      complex(kind=8), intent(out) :: f1LM(lm_max)
+      complex(dp), intent(out) :: f1LM(lm_max)
 
       !-- Local variables
-      complex(kind=8) :: work(n_phi_max,n_theta_max)
-      complex(kind=8) :: f1ES(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f1EA(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f1ES1,f1ES2,f1EA1,f1EA2
+      complex(dp) :: work(n_phi_max,n_theta_max)
+      complex(dp) :: f1ES(n_phi_max,n_theta_max/2)
+      complex(dp) :: f1EA(n_phi_max,n_theta_max/2)
+      complex(dp) :: f1ES1,f1ES2,f1EA1,f1EA2
       integer :: nThetaNHS, nThetaN, nThetaS
       integer :: n_m,lms,lm
-      integer :: n_theta_1,n_theta_rel_1,n_theta_rel_2,n_theta_2
+      integer :: n_theta_1,n_theta_2
 
       !-- Scrambling
       do nThetaN=1,n_theta_max/2
@@ -622,7 +628,6 @@ contains
 
       nThetaNHS=0
       do nThetaN=1,n_theta_max,2
-         ! nThetaS=n_theta_max-nThetaN+1
          nThetaS=nThetaN+1
          nThetaNHS=nThetaNHS+1
          do n_m=1,n_m_max
@@ -631,38 +636,21 @@ contains
          end do
       end do
 
-      do n_m=1,n_m_max
-         lms=lStop(n_m)
-         f1ES1=f1ES(n_m,1)
-         f1ES2=f1ES(n_m,2)
-         f1EA1=f1EA(n_m,1)
-         f1EA2=f1EA(n_m,2)
-         do lm=lStart(n_m),lms-1,2
-            f1LM(lm)  =f1ES1*wPlm(lm,1)  +f1ES2*wPlm(lm,2)
-            f1LM(lm+1)=f1EA1*wPlm(lm+1,1)+f1EA2*wPlm(lm+1,2)
-         enddo
+      f1LM(:)=0.0d0
 
-         if ( lmOdd(n_m) ) then
-            f1LM(lms)=f1ES1*wPlm(lms,1)+f1ES2*wPlm(lms,2)
-         end if
-      enddo
-
-      n_theta_1=1
-      do n_theta_rel_1=3,n_theta_max/2,2
-         n_theta_rel_2=n_theta_rel_1+1
-         n_theta_1=n_theta_1+2
+      do n_theta_1=1,n_theta_max/2,2
          n_theta_2=n_theta_1+1
          do n_m=1,n_m_max
             lms=lStop(n_m)
-            f1ES1=f1ES(n_m,n_theta_rel_1)
-            f1ES2=f1ES(n_m,n_theta_rel_2)
-            f1EA1=f1EA(n_m,n_theta_rel_1)
-            f1EA2=f1EA(n_m,n_theta_rel_2)
+            f1ES1=f1ES(n_m,n_theta_1)
+            f1ES2=f1ES(n_m,n_theta_2)
+            f1EA1=f1EA(n_m,n_theta_1)
+            f1EA2=f1EA(n_m,n_theta_2)
             do lm=lStart(n_m),lms-1,2
                f1LM(lm)  =f1LM(lm)+f1ES1*wPlm(lm,n_theta_1)+ &
                &                   f1ES2*wPlm(lm,n_theta_2)
                f1LM(lm+1)=f1LM(lm+1)+f1EA1*wPlm(lm+1,n_theta_1)+ &
-               &                   f1EA2*wPlm(lm+1,n_theta_2)
+               &                     f1EA2*wPlm(lm+1,n_theta_2)
             enddo
 
             if ( lmOdd(n_m) ) then
@@ -672,39 +660,37 @@ contains
          enddo
       enddo
 
-      ! do n_m=1,n_m_max
-         ! outputLM(lStart(n_m):lStop(n_m))=flm1(lStartP(n_m):lStopP(n_m)-1)
-      ! enddo
-
    end subroutine spatspec
 !-------------------------------------------------------------------------------
    subroutine spatspec_sphertor(input1, input2, n_ph, f1LM, f2LM, lm_max)
 
       !-- Input variables
       integer :: n_ph, lm_max
-      complex(kind=8), intent(in) :: input1(n_ph,*)
-      complex(kind=8), intent(in) :: input2(n_ph,*)
+      complex(dp), intent(in) :: input1(n_ph,*)
+      complex(dp), intent(in) :: input2(n_ph,*)
 
       !-- Output variables
-      complex(kind=8), intent(out) :: f1LM(lm_max)
-      complex(kind=8), intent(out) :: f2LM(lm_max)
+      complex(dp), intent(out) :: f1LM(lm_max)
+      complex(dp), intent(out) :: f2LM(lm_max)
 
       !-- Local variables
-      complex(kind=8) :: work1(n_phi_max,n_theta_max)
-      complex(kind=8) :: work2(n_phi_max,n_theta_max)
-      complex(kind=8) :: f1ES(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f1EA(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f2ES(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f2EA(n_phi_max,n_theta_max/2)
-      complex(kind=8) :: f1ES1,f1ES2,f1EA1,f1EA2
-      complex(kind=8) :: f2ES1,f2ES2,f2EA1,f2EA2
-      complex(kind=8) :: ci
-      real(kind=8) :: dm
+      complex(dp) :: work1(n_phi_max,n_theta_max)
+      complex(dp) :: work2(n_phi_max,n_theta_max)
+      complex(dp) :: f1ES(n_phi_max,n_theta_max/2)
+      complex(dp) :: f1EA(n_phi_max,n_theta_max/2)
+      complex(dp) :: f2ES(n_phi_max,n_theta_max/2)
+      complex(dp) :: f2EA(n_phi_max,n_theta_max/2)
+      complex(dp) :: f1ES1,f1ES2,f1EA1,f1EA2
+      complex(dp) :: f2ES1,f2ES2,f2EA1,f2EA2
+      complex(dp) :: ci
       integer :: nThetaNHS, nThetaN, nThetaS
-      integer :: n_m,lms,lm,m,l
-      integer :: n_theta_1,n_theta_rel_1,n_theta_rel_2,n_theta_2
+      integer :: n_m,lms,lm,l,m
+      integer :: n_theta_1,n_theta_2
 
-      ci = (0.0d0, 1.0d0)
+      ci = cmplx(0.0d0, 1.0d0, dp)
+
+      f1LM(:)=0.0d0
+      f2LM(:)=0.0d0
 
       !-- Scrambling
       do nThetaN=1,n_theta_max/2
@@ -727,86 +713,46 @@ contains
          end do
       end do
 
-
-      do n_m=1,n_m_max
-         m = (n_m-1)*minc
-         dm = real(m,kind=8)
-         lms=lStop(n_m)
-         f1ES1=f1ES(n_m,1)
-         f1ES2=f1ES(n_m,2)
-         f2ES1=f2ES(n_m,1)
-         f2ES2=f2ES(n_m,2)
-         f1EA1=f1EA(n_m,1)
-         f1EA2=f1EA(n_m,2)
-         f2EA1=f2EA(n_m,1)
-         f2EA2=f2EA(n_m,2)
-         do lm=lStart(n_m),lms-1,2
-            f1LM(lm)=-ci*dm*f1ES1* wPlm(lm,1)-ci*dm*f1ES2* wPlm(lm,2) &
-            &              +f2EA1*wdPlm(lm,1)+      f2EA2*wdPlm(lm,2)
-            f1LM(lm+1)=-ci*dm*f1EA1* wPlm(lm+1,1)-ci*dm*f1EA2* wPlm(lm+1,2) &
-            &                +f2ES1*wdPlm(lm+1,1)+      f2ES2*wdPlm(lm+1,2)
-            f2LM(lm)=      -f1EA1*wdPlm(lm,1)-      f1EA2*wdPlm(lm,2) &
-            &        -ci*dm*f2ES1* wPlm(lm,1)-ci*dm*f2ES2* wPlm(lm,2)
-            f2LM(lm+1)=      -f1ES1*wdPlm(lm+1,1)-      f1ES2*wdPlm(lm+1,2) &
-            &          -ci*dm*f2EA1* wPlm(lm+1,1)-ci*dm*f2EA2* wPlm(lm+1,2)
-         enddo
-
-         if ( lmOdd(n_m) ) then
-            f1LM(lmS)=-ci*dm*f1ES1* wPlm(lmS,1)-ci*dm*f1ES2* wPlm(lmS,2) &
-            &               +f2EA1*wdPlm(lmS,1)+      f2EA2*wdPlm(lmS,2)
-            f2LM(lmS)=      -f1EA1*wdPlm(lmS,1)-      f1EA2*wdPlm(lmS,2) &
-            &         -ci*dm*f2ES1* wPlm(lmS,1)-ci*dm*f2ES2* wPlm(lmS,2)
-         end if
-      enddo
-
-      n_theta_1=1
-      do n_theta_rel_1=3,n_theta_max/2,2
-         n_theta_rel_2=n_theta_rel_1+1
-         n_theta_1=n_theta_1+2
+      do n_theta_1=1,n_theta_max/2,2
          n_theta_2=n_theta_1+1
          do n_m=1,n_m_max
-            m = (n_m-1)*minc
-            dm = real(m,kind=8)
             lms=lStop(n_m)
-            f1ES1=f1ES(n_m,n_theta_rel_1)
-            f1ES2=f1ES(n_m,n_theta_rel_2)
-            f2ES1=f2ES(n_m,n_theta_rel_1)
-            f2ES2=f2ES(n_m,n_theta_rel_2)
-            f1EA1=f1EA(n_m,n_theta_rel_1)
-            f1EA2=f1EA(n_m,n_theta_rel_2)
-            f2EA1=f2EA(n_m,n_theta_rel_1)
-            f2EA2=f2EA(n_m,n_theta_rel_2)
+            f1ES1=f1ES(n_m,n_theta_1)
+            f1ES2=f1ES(n_m,n_theta_2)
+            f2ES1=f2ES(n_m,n_theta_1)
+            f2ES2=f2ES(n_m,n_theta_2)
+            f1EA1=f1EA(n_m,n_theta_1)
+            f1EA2=f1EA(n_m,n_theta_2)
+            f2EA1=f2EA(n_m,n_theta_1)
+            f2EA2=f2EA(n_m,n_theta_2)
             do lm=lStart(n_m),lms-1,2
-               f1LM(lm)  =f1LM(lm)-ci*dm*f1ES1* wPlm(lm,n_theta_1)      &
-               &                  -ci*dm*f1ES2* wPlm(lm,n_theta_2)      &
-               &                  +      f2EA1*wdPlm(lm,n_theta_1)      &
-               &                  +      f2EA2*wdPlm(lm,n_theta_2)
-               f1LM(lm+1)=f1LM(lm+1)-ci*dm*f1EA1* wPlm(lm+1,n_theta_1)  &
-               &                    -ci*dm*f1EA2* wPlm(lm+1,n_theta_2)  &
-               &                    +      f2ES1*wdPlm(lm+1,n_theta_1)  &
-               &                    +      f2ES2*wdPlm(lm+1,n_theta_2)
+               f1LM(lm)  =f1LM(lm)-ci*dPhi(lm,n_theta_1)*f1ES1* wPlm(lm,n_theta_1)  &
+               &                  -ci*dPhi(lm,n_theta_2)*f1ES2* wPlm(lm,n_theta_2)  &
+               &          +f2EA1*wdPlm(lm,n_theta_1)+f2EA2*wdPlm(lm,n_theta_2)
+               f1LM(lm+1)=f1LM(lm+1)-ci*dPhi(lm,n_theta_1)*f1EA1*wPlm(lm+1,n_theta_1)&
+               &                    -ci*dPhi(lm,n_theta_2)*f1EA2*wPlm(lm+1,n_theta_2)&
+               &          +f2ES1*wdPlm(lm+1,n_theta_1)+f2ES2*wdPlm(lm+1,n_theta_2)
 
-               f2LM(lm)  =f2LM(lm)-      f1EA1*wdPlm(lm,n_theta_1) &
-               &                  -      f1EA2*wdPlm(lm,n_theta_2) &
-               &                  -ci*dm*f2ES1* wPlm(lm,n_theta_1) &
-               &                  -ci*dm*f2ES2* wPlm(lm,n_theta_2)
-               f2LM(lm+1)=f2LM(lm+1)-      f1ES1*wdPlm(lm+1,n_theta_1) &
-               &                    -      f1ES2*wdPlm(lm+1,n_theta_2) &
-               &                    -ci*dm*f2EA1* wPlm(lm+1,n_theta_1) &
-               &                    -ci*dm*f2EA2* wPlm(lm+1,n_theta_2)
+               f2LM(lm)  =f2LM(lm)-f1EA1*wdPlm(lm,n_theta_1)                       &
+               &                  -f1EA2*wdPlm(lm,n_theta_2)                       &
+               &                  -ci*dPhi(lm,n_theta_1)*f2ES1* wPlm(lm,n_theta_1) &
+               &                  -ci*dPhi(lm,n_theta_2)*f2ES2* wPlm(lm,n_theta_2)
+               f2LM(lm+1)=f2LM(lm+1)-f1ES1*wdPlm(lm+1,n_theta_1)                     &
+               &                    -f1ES2*wdPlm(lm+1,n_theta_2)                     &
+               &                    -ci*dPhi(lm,n_theta_1)*f2EA1*wPlm(lm+1,n_theta_1)&
+               &                    -ci*dPhi(lm,n_theta_2)*f2EA2*wPlm(lm+1,n_theta_2)
 
             enddo
 
             if ( lmOdd(n_m) ) then
-               f1LM(lmS)=f1LM(lmS)-ci*dm*f1ES1* wPlm(lmS,n_theta_1) &
-               &                  -ci*dm*f1ES2* wPlm(lmS,n_theta_2) &
-               &                  +      f2EA1*wdPlm(lmS,n_theta_1) &
-               &                  +      f2EA2*wdPlm(lmS,n_theta_2)
+               f1LM(lmS)=f1LM(lmS)-ci*dPhi(lm,n_theta_1)*f1ES1* wPlm(lmS,n_theta_1) &
+               &                  -ci*dPhi(lm,n_theta_2)*f1ES2* wPlm(lmS,n_theta_2) &
+               &          +f2EA1*wdPlm(lmS,n_theta_1)+f2EA2*wdPlm(lmS,n_theta_2)
 
-               f2LM(lmS)=f2LM(lmS)-      f1EA1*wdPlm(lmS,n_theta_1) &
-               &                  -      f1EA2*wdPlm(lmS,n_theta_2) &
-               &                  -ci*dm*f2ES1* wPlm(lmS,n_theta_1) &
-               &                  -ci*dm*f2ES2* wPlm(lmS,n_theta_2)
+               f2LM(lmS)=f2LM(lmS)-f1EA1*wdPlm(lmS,n_theta_1)                       &
+               &                  -f1EA2*wdPlm(lmS,n_theta_2)                       &
+               &                  -ci*dPhi(lm,n_theta_1)*f2ES1* wPlm(lmS,n_theta_1) &
+               &                  -ci*dPhi(lm,n_theta_2)*f2ES2* wPlm(lmS,n_theta_2)
             end if
          enddo
       enddo
@@ -817,12 +763,11 @@ contains
          do l=m,l_max
             lm=lm+1
             if ( lm > 1 ) then
-               f1LM(lm)=f1LM(lm)/real(l*(l+1),kind=8)
-               f2LM(lm)=f2LM(lm)/real(l*(l+1),kind=8)
+               f1LM(lm)=f1LM(lm)/real(l*(l+1),dp)
+               f2LM(lm)=f2LM(lm)/real(l*(l+1),dp)
             end if
          end do
       end do
-
 
    end subroutine spatspec_sphertor
 !-------------------------------------------------------------------------------
@@ -836,7 +781,6 @@ contains
       !-- Output variables
       integer, intent(out) :: lStart(n_m_max),lStop(n_m_max)
       logical, intent(out) :: lmOdd(n_m_max)
-
 
       !-- Local variables
       integer :: mc, m

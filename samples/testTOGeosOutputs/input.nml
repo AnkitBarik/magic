@@ -9,14 +9,12 @@ n_cheb_ic_max=15,
 &control
  mode        =0,
  tag         ="start",
- n_time_steps=50,
- courfac     =2.5D0,
- alffac      =1.0D0,
- dtmax       =1.0D-4,
- n_cour_step =5,
+ n_time_steps=25,
+ dtmax       =2.0D-4,
  alpha       =0.6D0,
  runHours    =12,
  runMinutes  =00,
+ time_scheme ='BPR353',
 /
 &phys_param
  ra          =1.1D5,
@@ -31,24 +29,29 @@ n_cheb_ic_max=15,
  kbotb       =3
 /
 &start_field
- l_start_file=.TRUE.,
- start_file  ="../boussBenchSat/rst_end.start",
- inform      =5
+ l_start_file=.true.,
+ start_file  ="../boussBenchSat/checkpoint_end.start",
  init_b1     =0,
  amp_b1      =5,
  init_s1     =0,
  amp_s1      =0.1,
 /
 &output_control
- n_log_step  =10,
+ n_log_step  =5,
  n_graphs    =0,
  n_rsts      =1,
  n_stores    =0,
  runid       ="Benchmark 2",
- l_TO        =.TRUE.,
- l_TOmovie   =.TRUE.,
-n_TOmovie_step=10,
- l_par       =.TRUE.,
+ n_TO_step   =5,
+ l_TO        =.true.,
+ l_TOmovie   =.true.,
+n_TOmovie_step=5,
+ l_par       =.true.,
+ l_movie     =.true.,
+ n_movie_step=10,
+ movie(1)    ="vs geos",
+ movie(2)    ="vp geos",
+ movie(3)    ="vortz geos",
 /
 &mantle 
  nRotMa      =0

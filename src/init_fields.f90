@@ -6,19 +6,19 @@ module init_fields
    use precision_mod
    use iso_fortran_env, only: output_unit
    use parallel_mod
-   use mpi_ptop_mod, only: type_mpiptop
-   use mpi_transp, only: type_mpitransp
-   use truncation, only: n_r_max, nrp, n_r_maxMag,n_r_ic_max,lmP_max, &
-       &                 n_phi_max,n_theta_max,n_r_tot,l_max,m_max,   &
-       &                 l_axi,minc,n_cheb_ic_max,lm_max
+   use chebyshev, only: type_cheb_odd
+   use finite_differences, only: type_fd
+   use communications, only: lo2r_one, r2lo_one, transp_R2Phi, transp_Phi2R
+   use truncation, only: n_r_max, n_r_maxMag, n_r_ic_max, m_min, l_max, &
+       &                 n_phi_max, n_theta_max, n_r_tot, m_max,        &
+       &                 minc, n_cheb_ic_max, lm_max, nlat_padded
    use mem_alloc, only: bytes_allocated
-   use blocking, only: nfs, nThetaBs, sizeThetaB, lo_map, st_map,  &
-       &               llm, ulm, llmMag, ulmMag
+   use blocking, only: lo_map, st_map, llm, ulm, llmMag, ulmMag
    use horizontal_data, only: sinTheta, dLh, dTheta1S, dTheta1A, &
-       &                      phi, cosTheta, hdif_B, D_lP1
+       &                      phi, cosTheta, hdif_B
    use logic, only: l_rot_ic, l_rot_ma, l_SRIC, l_SRMA, l_cond_ic,  &
-       &            l_temperature_diff, l_chemical_conv,            &
-       &            l_anelastic_liquid, l_non_adia, l_diff_prec
+       &            l_temperature_diff, l_chemical_conv, l_onset,   &
+       &            l_anelastic_liquid, l_non_adia, l_finite_diff
    use radial_functions, only: r_icb, r, r_cmb, r_ic, or1, jVarCon,    &
        &                       lambda, or2, dLlambda, or3, cheb_ic,    &
        &                       dcheb_ic, d2cheb_ic, cheb_norm_ic, or1, &
@@ -26,27 +26,27 @@ module init_fields
        &                       dLtemp0, kappa, dLkappa, beta, dbeta,   &
        &                       epscProf, ddLtemp0, ddLalpha0, rgrav,   &
        &                       rho0, dLalpha0, alpha0, otemp1, ogrun,  &
-       &                       rscheme_oc
+       &                       rscheme_oc, or1, O_r_ic
    use radial_data, only: n_r_icb, n_r_cmb, nRstart, nRstop
    use constants, only: pi, y10_norm, c_z10_omega_ic, c_z10_omega_ma, osq4pi, &
-       &                zero, one, two, three, four, third, half
-   use useful, only: random, abortRun
-#ifdef WITH_SHTNS
-   use shtns
-#else
-   use fft
-   use legendre_grid_to_spec, only: legTF1
-#endif
+       &                zero, one, two, three, four, third, half, sq4pi
+   use useful, only: abortRun, lagrange_interp
+   use sht, only: scal_to_SH, scal_to_spat
    use physical_parameters, only: impS, n_impS_max, n_impS, phiS, thetaS, &
        &                          peakS, widthS, radratio, imagcon, opm,  &
        &                          sigma_ratio, O_sr, kbots, ktops, opr,   &
-       &                          epsc, ViscHeatFac, ThExpNb,             &
+       &                          epsc, ViscHeatFac, ThExpNb, tmelt,      &
        &                          impXi, n_impXi_max, n_impXi, phiXi,     &
        &                          thetaXi, peakXi, widthXi, osc, epscxi,  &
        &                          kbotxi, ktopxi, BuoFac, ktopp, oek,     &
-       &                          diff_prec_angle
+       &                          epsPhase
+   use special, only: ampForce
    use algebra, only: prepare_mat, solve_mat
    use cosine_transform_odd
+   use dense_matrices
+   use real_matrices
+   use band_matrices
+
 
    implicit none
 
@@ -56,6 +56,7 @@ module init_fields
    integer, public :: init_s1,init_s2
    integer, public :: init_xi1,init_xi2
    integer, public :: init_b1,init_v1
+   integer, public :: init_phi ! An integer to specify phase field initial configuration
 
    !----- Entropy amplitudes for initialisation:
    real(cp), public :: amp_s1,amp_s2,amp_v1,amp_b1,amp_xi1,amp_xi2
@@ -74,6 +75,10 @@ module init_fields
    complex(cp), public, allocatable :: topxi(:,:)
    complex(cp), public, allocatable :: botxi(:,:)
 
+   !---- Phase field
+   real(cp), public :: phi_top ! Phase field value at the outer boundary
+   real(cp), public :: phi_bot ! Phase field value at the inner boundary
+
    !----- Peak values for magnetic field:
    real(cp), public :: bpeakbot,bpeaktop
 
@@ -83,7 +88,7 @@ module init_fields
    real(cp), public :: omega_ma2,omegaOsz_ma2,tShift_ma2,tOmega_ma2
    real(cp), public :: omega_ic1,omegaOsz_ic1,tShift_ic1,tOmega_ic1
    real(cp), public :: omega_ic2,omegaOsz_ic2,tShift_ic2,tOmega_ic2
-   real(cp), public :: omega_diff
+   real(cp), public :: omega_diff ! z-rotation offset due to differential precession
 
    !----- About start-file:
    logical, public :: l_start_file     ! taking fields from startfile ?
@@ -98,7 +103,7 @@ module init_fields
    real(cp), public :: scale_b
    real(cp), public :: tipdipole       ! adding to symetric field
 
-   public :: initialize_init_fields, initV, initS, initB, ps_cond, &
+   public :: initialize_init_fields, initV, initS, initB, initPhi, initF, ps_cond, &
    &         pt_cond, initXi, xi_cond, finalize_init_fields
 
 contains
@@ -107,18 +112,22 @@ contains
       !
       ! Memory allocation
       !
+      tOmega_ic1=0.0_cp
+      tOmega_ic2=0.0_cp
 
-      allocate( tops(0:l_max,0:m_max) )
-      allocate( bots(0:l_max,0:m_max) )
+      allocate( tops(0:l_max,0:m_max), bots(0:l_max,0:m_max) )
       tops(:,:)=zero
       bots(:,:)=zero
+      bots(0,0)=one
+      tops(0,0)=0.0_cp
       bytes_allocated = bytes_allocated+2*(l_max+1)*(m_max+1)*SIZEOF_DEF_COMPLEX
 
       if ( l_chemical_conv ) then
-         allocate( topxi(0:l_max,0:m_max) )
-         allocate( botxi(0:l_max,0:m_max) )
+         allocate( topxi(0:l_max,0:m_max), botxi(0:l_max,0:m_max) )
          topxi(:,:)=zero
          botxi(:,:)=zero
+         botxi(0,0)=one
+         topxi(0,0)=0.0_cp
          bytes_allocated = bytes_allocated+2*(l_max+1)*(m_max+1)*SIZEOF_DEF_COMPLEX
       end if
 
@@ -128,7 +137,6 @@ contains
       !
       ! Memory deallocation
       !
-
       deallocate (tops, bots )
       if ( l_chemical_conv ) deallocate( topxi, botxi )
 
@@ -148,60 +156,35 @@ contains
 
       !-- Local variables
       complex(cp) :: z_Rloc(lm_max,nRstart:nRstop)
-      integer :: lm,l,m,n,st_lmP,l1m0
-      integer :: nR,nTheta,nThetaB,nThetaStart,nPhi
+      integer :: lm,l,m,l1m0
+      integer :: nR,nTheta,nPhi
       real(cp) :: ra1,ra2,c_r,c_i
       real(cp) :: amp_r,rExp
       real(cp) :: rDep(n_r_max)
-      class(type_mpitransp), pointer :: r2lo_initv, lo2r_initv
-      real(cp) :: ss,ome(nrp,nfs)
-      complex(cp) :: omeLM(lmP_max)
-
-      allocate( type_mpiptop :: r2lo_initv )
-      allocate( type_mpiptop :: lo2r_initv )
+      real(cp) :: ss,ome(nlat_padded,n_phi_max)
+      complex(cp) :: omeLM(lm_max)
 
       !-- Initialize rotation according to
       !   given inner core and mantel rotation rate:
       if ( init_v1 == 1 .and. ( omega_ic1 /= 0.0_cp .or. omega_ma1 /= 0.0_cp ) ) then
 
-         call r2lo_initv%create_comm(1)
-         call lo2r_initv%create_comm(1)
-
          !-- From lo distributed to r distributed
-         call lo2r_initv%transp_lm2r(z, z_Rloc)
+         call lo2r_one%transp_lm2r(z, z_Rloc)
 
          !-- Approximating the Stewardson solution:
          do nR=nRstart,nRstop
 
-            nTheta=0
-            do n=1,nThetaBs ! loop over the theta blocks
-
-               nThetaStart=(n-1)*sizeThetaB+1
-               do nThetaB=1,sizeThetaB
-                  nTheta=nTheta+1
+            do nPhi=1,n_phi_max
+               do nTheta=1,n_theta_max
                   ss=r(nR)*sinTheta(nTheta)
-                  !------------ start with constructing rotation rate ome:
-                  do nPhi=1,n_phi_max
-                     if ( ss <= r_icb ) then
-                        ome(nPhi,nThetaB)=omega_ma1+half*omega_ic1
-                     else
-                        ome(nPhi,nThetaB)=omega_ma1
-                     end if
-                  end do
-#ifndef WITH_SHTNS
-                  ome(n_phi_max+1,nThetaB)=0.0_cp
-                  ome(n_phi_max+2,nThetaB)=0.0_cp
-#endif
+                  if ( ss <= r_icb ) then
+                     ome(nTheta,nPhi)=omega_ma1+half*omega_ic1
+                  else
+                     ome(nTheta,nPhi)=omega_ma1
+                  end if
                end do
-               !------------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-               if ( .not. l_axi ) call fft_thetab(ome,-1)
-               call legTF1(nThetaStart,omeLM,ome)
-#endif
-            end do ! End of loop over theta blocks
-#ifdef WITH_SHTNS
-            call spat_to_SH(ome, omeLM)
-#endif
+            end do
+            call scal_to_SH(ome, omeLM, l_max)
 
             !------- ome now in spherical harmonic space,
             !        apply operator dTheta1=1/(r sinTheta) d/ d theta sinTheta**2,
@@ -210,66 +193,39 @@ contains
             do lm=2,lm_max
                l   =st_map%lm2l(lm)
                m   =st_map%lm2m(lm)
-               st_lmP=st_map%lm2lmP(lm)
-               if ( l > m ) then
+               if ( l < l_max .and. l > m ) then
                   z_Rloc(lm,nR)=z_Rloc(lm,nR) + r(nR)**2/dLh(lm) * ( &
-                  &    dTheta1S(lm)*omeLM(st_map%lmP2lmPS(st_lmP))   &
-                  &   -dTheta1A(lm)*omeLM(st_map%lmP2lmPA(st_lmP)) )
-               else if ( l == m ) then
-                  if ( dLh(lm) /= 0.0_cp ) then
-                     z_Rloc(lm,nR)=z_Rloc(lm,nR) - r(nR)**2/dLh(lm) *  &
-                     &    dTheta1A(lm)*omeLM(st_map%lmP2lmPA(st_lmP))
-                  end if
+                  &          dTheta1S(lm)*omeLM(st_map%lm2lmS(lm))   &
+                  &         -dTheta1A(lm)*omeLM(st_map%lm2lmA(lm)) )
+               else if ( l < l_max .and. l == m ) then
+                  z_Rloc(lm,nR)=z_Rloc(lm,nR) - r(nR)**2/dLh(lm) *  &
+                  &          dTheta1A(lm)*omeLM(st_map%lm2lmA(lm))
+               else if ( l == l_max .and. m < l ) then
+                  z_Rloc(lm,nR)=z_Rloc(lm,nR) + r(nR)**2/dLh(lm) *  &
+                  &          dTheta1S(lm)*omeLM(st_map%lm2lmS(lm))
                end if
             end do
 
          end do ! close loop over radial grid points
 
          !-- Transpose back to lo distributed
-         call r2lo_initv%transp_r2lm(z_Rloc, z)
-
-         !-- Destroy MPI communicators
-         call r2lo_initv%destroy_comm()
-         call lo2r_initv%destroy_comm()
+         call r2lo_one%transp_r2lm(z_Rloc, z)
 
       else if ( init_v1 == 2 ) then
 
-         call r2lo_initv%create_comm(1)
-         call lo2r_initv%create_comm(1)
-
          !-- From lo distributed to r distributed
-         call lo2r_initv%transp_lm2r(z, z_Rloc)
+         call lo2r_one%transp_lm2r(z, z_Rloc)
 
          !-- Approximating the Stewardson solution:
          do nR=nRstart,nRstop
 
-            nTheta=0
-            do n=1,nThetaBs ! loop over the theta blocks
-
-               nThetaStart=(n-1)*sizeThetaB+1
-               do nThetaB=1,sizeThetaB
-                  nTheta=nTheta+1
+            do nPhi=1,n_phi_max
+               do nTheta=1,n_theta_max
                   ss=r(nR)*sinTheta(nTheta)
-                  !------------ start with constructing rotation rate ome:
-                  do nPhi=1,n_phi_max
-                     !ome(nPhi,nThetaB)=amp_v1*(one-(r(nR)-r(n_r_max))**2/r(nR)**3)
-                     !ome(nPhi,nThetaB)=amp_v1*r_icb/r(nR)
-                     ome(nPhi,nThetaB)=amp_v1/sqrt(one+ss**4)
-                  end do
-#ifndef WITH_SHTNS
-                  ome(n_phi_max+1,nThetaB)=0.0_cp
-                  ome(n_phi_max+2,nThetaB)=0.0_cp
-#endif
+                  ome(nTheta,nPhi)=amp_v1/sqrt(one+ss**4)
                end do
-               !------------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-               if ( .not. l_axi ) call fft_thetab(ome,-1)
-               call legTF1(nThetaStart,omeLM,ome)
-#endif
-            end do ! End of loop over theta blocks
-#ifdef WITH_SHTNS
-            call spat_to_SH(ome, omeLM)
-#endif
+            end do
+            call scal_to_SH(ome, omeLM, l_max)
 
             !------------ ome now in spherical harmonic space,
             !             apply operator dTheta1=1/(r sinTheta) d/ d theta sinTheta**2,
@@ -278,29 +234,23 @@ contains
             do lm=2,lm_max
                l   =st_map%lm2l(lm)
                m   =st_map%lm2m(lm)
-               st_lmP=st_map%lm2lmP(st_map%lm2(l,m))
-               if ( l > m ) then
-                  z_Rloc(lm,nR)=z_Rloc(lm,nR) + &
-                  &    r(nR)**2/dLh(lm) * ( &
-                  &    dTheta1S(lm)*omeLM(st_map%lmP2lmPS(st_lmP)) &
-                  &    - dTheta1A(lm)*omeLM(st_map%lmP2lmPA(st_lmP)) )
-               else if ( l == m ) then
-                  if ( dLh(lm) /= 0.0_cp ) then
-                      z_Rloc(lm,nR)=z_Rloc(lm,nR) - r(nR)**2/dLh(lm) * &
-                      &    dTheta1A(lm)*omeLM(st_map%lmP2lmPA(st_lmP))
-                  end if
+               if ( l < l_max .and. l > m ) then
+                  z_Rloc(lm,nR)=z_Rloc(lm,nR) + r(nR)**2/dLh(lm) * ( &
+                  &            dTheta1S(lm)*omeLM(st_map%lm2lmS(lm)) &
+                  &          - dTheta1A(lm)*omeLM(st_map%lm2lmA(lm)) )
+               else if ( l < l_max .and. l == m ) then
+                   z_Rloc(lm,nR)=z_Rloc(lm,nR) - r(nR)**2/dLh(lm) * &
+                   &           dTheta1A(lm)*omeLM(st_map%lm2lmA(lm))
+               else if ( l == l_max  .and. m < l) then
+                  z_Rloc(lm,nR)=z_Rloc(lm,nR) + r(nR)**2/dLh(lm) *   &
+                  &            dTheta1S(lm)*omeLM(st_map%lm2lmS(lm))
                end if
             end do
 
          end do ! close loop over radial grid points
 
          !-- Transpose back to lo distributed
-         call r2lo_initv%transp_r2lm(z_Rloc, z)
-
-         !-- Destroy MPI communicators
-         call r2lo_initv%destroy_comm()
-         call lo2r_initv%destroy_comm()
-
+         call r2lo_one%transp_r2lm(z_Rloc, z)
 
       else if ( init_v1 > 2 ) then
 
@@ -316,14 +266,16 @@ contains
             amp_r=amp_v1*r_ICB**(rExp+1.)/y10_norm
          end if
          do nR=1,n_r_max
-            rDep(nR)=amp_r/r(nR)**(rExp-1.)
-            !write(*,"(A,I3,A,ES20.12)") "rDep(",nR,") = ",rDep(nR)
+            rDep(nR)=amp_r*or1(nR)**(rExp-1.)
+            !write(output_unit,"(A,I3,A,ES20.12)") "rDep(",nR,") = ",rDep(nR)
             do lm=llm,ulm
                l=lo_map%lm2l(lm)
                m=lo_map%lm2m(lm)
                if ( l /= 0 ) then
-                  ra1=(-one+two*random(0.0_cp))/(real(l,cp))**(init_v1-1)
-                  ra2=(-one+two*random(0.0_cp))/(real(l,cp))**(init_v1-1)
+                  call random_number(ra1)
+                  call random_number(ra2)
+                  ra1=(-one+two*ra1)/(real(l,cp))**(init_v1-1)
+                  ra2=(-one+two*ra2)/(real(l,cp))**(init_v1-1)
                   c_r=ra1*rDep(nR)
                   c_i=ra2*rDep(nR)
                   if ( m == 0 ) then  ! non axisymmetric modes
@@ -332,7 +284,7 @@ contains
                      z(lm,nR)=z(lm,nR)+cmplx(c_r,c_i,kind=cp)
                   end if
                end if
-               write(*,"(A,4I4,2ES20.12)") "z = ",nR,lm,l,m,z(lm,nR)
+               write(output_unit,"(A,4I4,2ES20.12)") "z = ",nR,lm,l,m,z(lm,nR)
             end do
          end do
 
@@ -352,13 +304,17 @@ contains
             do lm=llm,ulm
                l=lo_map%lm2l(lm)
                m=lo_map%lm2m(lm)
-               ra1=(-one+two*random(0.0_cp))/(real(l,cp))**(-init_v1-1)
-               ra2=(-one+two*random(0.0_cp))/(real(l,cp))**(-init_v1-1)
-               c_r=ra1*rDep(nR)
-               c_i=ra2*rDep(nR)
-               if ( m > 0 ) then  ! no axisymmetric modes
-                  w(lm,nR)=w(lm,nR)+cmplx(c_r,c_i,kind=cp)
-                  z(lm,nR)=z(lm,nR)+cmplx(c_r,c_i,kind=cp)
+               if ( l /= 0 ) then
+                  call random_number(ra1)
+                  call random_number(ra2)
+                  ra1=(-one+two*ra1)/(real(l,cp))**(-init_v1-1)
+                  ra2=(-one+two*ra2)/(real(l,cp))**(-init_v1-1)
+                  c_r=ra1*rDep(nR)
+                  c_i=ra2*rDep(nR)
+                  if ( m > 0 ) then  ! no axisymmetric modes
+                     w(lm,nR)=w(lm,nR)+cmplx(c_r,c_i,kind=cp)
+                     z(lm,nR)=z(lm,nR)+cmplx(c_r,c_i,kind=cp)
+                  end if
                end if
             end do
          end do
@@ -373,18 +329,17 @@ contains
 
          if ( (l1m0>=llm) .and. (l1m0<=ulm) ) then
 
-            write(*,*) '! NO STARTFILE READ, SETTING Z10!'
-
+            write(output_unit,*) '! NO STARTFILE READ, SETTING Z10!'
 
             if ( l_SRIC .or. l_rot_ic .and. omega_ic1 /= 0.0_cp ) then
                omega_ic=omega_ic1*cos(omegaOsz_ic1*tShift_ic1) + &
                &        omega_ic2*cos(omegaOsz_ic2*tShift_ic2) + omega_diff
-               write(*,*)
-               write(*,*) '! I use prescribed inner core rotation rate:'
-               write(*,*) '! omega_ic=',omega_ic
+               write(output_unit,*)
+               write(output_unit,*) '! I use prescribed inner core rotation rate:'
+               write(output_unit,*) '! omega_ic=',omega_ic
                z(l1m0,n_r_icb)=cmplx(omega_ic/c_z10_omega_ic,kind=cp)
             else if ( l_rot_ic .and. omega_ic1 == 0.0_cp ) then
-               omega_ic=c_z10_omega_ic*real(z(lo_map%lm2(1,0),n_r_icb))
+               omega_ic=c_z10_omega_ic*real(z(l1m0,n_r_icb))
             else
                omega_ic=0.0_cp
             end if
@@ -392,26 +347,26 @@ contains
                omega_ma=omega_ma1*cos(omegaOsz_ma1*tShift_ma1) + &
                &        omega_ma2*cos(omegaOsz_ma2*tShift_ma2) + omega_diff
 
-               write(*,*)
-               write(*,*) '! I use prescribed mantle rotation rate:'
-               write(*,*) '! omega_ma=',omega_ma
+               write(output_unit,*)
+               write(output_unit,*) '! I use prescribed mantle rotation rate:'
+               write(output_unit,*) '! omega_ma=',omega_ma
                z(l1m0,n_r_cmb)=cmplx(omega_ma/c_z10_omega_ma,kind=cp)
             else if ( l_rot_ma .and. omega_ma1 == 0.0_cp ) then
-               omega_ma=c_z10_omega_ma*real(z(lo_map%lm2(1,0),n_r_cmb))
+               omega_ma=c_z10_omega_ma*real(z(l1m0,n_r_cmb))
             else
                omega_ma=0.0_cp
             end if
          end if
 
 #ifdef WITH_MPI
-         call MPI_Bcast(omega_ic,1,MPI_DEF_REAL,rank_with_l1m0,MPI_COMM_WORLD,ierr)
-         call MPI_Bcast(omega_ma,1,MPI_DEF_REAL,rank_with_l1m0,MPI_COMM_WORLD,ierr)
+         if ( m_min == 0 ) then
+            call MPI_Bcast(omega_ic,1,MPI_DEF_REAL,rank_with_l1m0,MPI_COMM_WORLD,ierr)
+            call MPI_Bcast(omega_ma,1,MPI_DEF_REAL,rank_with_l1m0,MPI_COMM_WORLD,ierr)
+         end if
 #endif
-
       else
          if ( nRotIc == 2 ) omega_ic=omega_ic1 + omega_diff
          if ( nRotMa == 2 ) omega_ma=omega_ma1 + omega_diff
-
       end if
 
    end subroutine initV
@@ -448,22 +403,21 @@ contains
 
       !-- Local variables:
       integer :: n_r,lm,l,m,lm00
-      real(cp) :: x,rr,c_r,c_i,s_r,s_i
+      real(cp) :: x,c_r,c_i,s_r,s_i
       real(cp) :: ra1,ra2
       real(cp) :: s0(n_r_max),p0(n_r_max),s1(n_r_max)
 
-      integer :: nTheta,n,nThetaStart,nThetaB,nPhi,nS
+      integer :: nTheta,nPhi,nS
       real(cp) :: xL,yL,zL,rH,angleL,s00,s00P
       real(cp) :: mata(n_impS_max,n_impS_max)
       real(cp) :: amp(n_impS_max)
       integer :: pivot(n_impS_max)
       real(cp) :: xS(n_impS_max),yS(n_impS_max)
       real(cp) :: zS(n_impS_max),sFac(n_impS_max)
-      real(cp) :: sCMB(nrp,nfs)
-      complex(cp) :: sLM(lmP_max)
-      integer :: info,i,j,l1,m1,filehandle
+      real(cp) :: sCMB(nlat_padded,n_phi_max)
+      complex(cp) :: sLM(lm_max)
+      integer :: info,i,j,filehandle
       logical :: rank_has_l0m0
-
 
       lm00=lo_map%lm2(0,0)
       rank_has_l0m0=.false.
@@ -515,20 +469,32 @@ contains
          s1(n_r)=one-three*x**2+three*x**4-x**6
       end do
 
-      if ( init_s1 < 100 .and. init_s1 > 0 ) then
+      if ( l_onset ) then
+         !-- same amplitude on all modes
+         do n_r=1,n_r_max
+            do lm=llm,ulm ! all modes except l=m=0 carry the same function
+               l = lo_map%lm2l(lm)
+               if ( l == 0 ) cycle
+               s(lm,n_r)=amp_s1*s1(n_r)
+            end do
+         end do
+
+      else if ( init_s1 < 100 .and. init_s1 > 0 ) then
 
       !-- Random noise initialization of all (l,m) modes exept (l=0,m=0):
 
-         rr=random(one)
-         do lm=max(llm,2),ulm
-            m1 = lo_map%lm2m(lm)
-            l1 = lo_map%lm2l(lm)
-            ra1=(-one+two*random(0.0_cp))*amp_s1/(real(l1,cp))**(init_s1-1)
-            ra2=(-one+two*random(0.0_cp))*amp_s1/(real(l1,cp))**(init_s1-1)
+         do lm=llm,ulm
+            l = lo_map%lm2l(lm)
+            if ( l == 0 ) cycle
+            m = lo_map%lm2m(lm)
+            call random_number(ra1)
+            call random_number(ra2)
+            ra1=(-one+two*ra1)*amp_s1/(real(l,cp))**(init_s1-1)
+            ra2=(-one+two*ra2)*amp_s1/(real(l,cp))**(init_s1-1)
             do n_r=1,n_r_max
                c_r=ra1*s1(n_r)
                c_i=ra2*s1(n_r)
-               if ( m1 > 0 ) then  ! non axisymmetric modes
+               if ( m > 0 ) then  ! non axisymmetric modes
                   s(lm,n_r)=s(lm,n_r)+cmplx(c_r,c_i,kind=cp)
                else
                   s(lm,n_r)=s(lm,n_r)+cmplx(c_r,0.0_cp,kind=cp)
@@ -546,23 +512,23 @@ contains
          m=mod(init_s1,100)
          if ( l > 99 ) m=mod(init_s1,1000)
          if ( mod(m,minc) /= 0 ) then
-            write(*,*) '! Wave number of mode for entropy initialisation'
-            write(*,*) '! not compatible with phi-symmetry:',m
+            write(output_unit,*) '! Wave number of mode for entropy initialisation'
+            write(output_unit,*) '! not compatible with phi-symmetry:',m
             call abortRun('Stop run in init')
          end if
          if ( l > l_max .or. l < m ) then
-            write(*,*) '! Degree of mode for entropy initialisation'
-            write(*,*) '! > l_max or < m !',l
+            write(output_unit,*) '! Degree of mode for entropy initialisation'
+            write(output_unit,*) '! > l_max or < m !',l
             call abortRun('Stop run in init')
          end if
          lm=lo_map%lm2(l,m)
-         if( (lm>=llm) .and. (lm<=ulm) ) then
+         if ( (lm>=llm) .and. (lm<=ulm) ) then
             do n_r=1,n_r_max
                c_r=s1(n_r)*amp_s1
                s(lm,n_r)=s(lm,n_r)+cmplx(c_r,0.0_cp,kind=cp)
             end do
 
-            write(*,'(/'' ! Entropy initialized at mode:'', &
+            write(output_unit,'(/'' ! Entropy initialized at mode:'', &
             &      '' l='',i4,'' m='',i4,'' Ampl='',f8.5)') l,m,amp_s1
          end if
 
@@ -570,21 +536,21 @@ contains
          if ( init_s2 > 99 ) then
             m=mod(init_s2,100)
             if ( mod(m,minc) /= 0 ) then
-               write(*,*) '! Wave number of mode for entropy initialisation'
-               write(*,*) '! not compatible with phi-symmetry:',m
+               write(output_unit,*) '! Wave number of mode for entropy initialisation'
+               write(output_unit,*) '! not compatible with phi-symmetry:',m
                call abortRun('Stop run in init')
             end if
             l=init_s2/100
             if ( l > l_max .or. l < m ) then
-               write(*,*) '! Degree of mode for entropy initialisation'
-               write(*,*) '! > l_max or < m !',l
+               write(output_unit,*) '! Degree of mode for entropy initialisation'
+               write(output_unit,*) '! > l_max or < m !',l
                call abortRun('Stop run in init')
             end if
 
             lm=lo_map%lm2(l,m)
             s_r=amp_s2
             s_i=0.0_cp
-            if( (lm>=llm) .and. (lm<=ulm) ) then
+            if ( (lm>=llm) .and. (lm<=ulm) ) then
                if ( amp_s2 < 0.0_cp .and. m /= 0 ) then
                !-------- Sin(phi)-mode initialized for amp_s2<0
                   s_r = 0.0_cp
@@ -603,15 +569,11 @@ contains
 
       end if
 
-      if ( impS == 0 ) then
-         return
-      end if
+      if ( impS == 0 ) return
 
       !-- Now care for the prescribed boundary condition:
 
-      if ( minc /= 1 ) then
-         call abortRun('! impS doesnt work for minc /= 1')
-      end if
+      if ( minc /= 1 ) call abortRun('! impS doesnt work for minc /= 1')
 
       if ( abs(impS) == 1 ) then
          n_impS=2
@@ -632,44 +594,26 @@ contains
          yS(nS)=sin(thetaS(nS))*sin(phiS(nS))
          zS(nS)=cos(thetaS(nS))
 
-         nTheta=0
-         do n=1,nThetaBs ! loop over the theta blocks
-
-            nThetaStart=(n-1)*sizeThetaB+1
-            do nThetaB=1,sizeThetaB
-               nTheta=nTheta+1
-               do nPhi=1,n_phi_max
-                  xL=sinTheta(nTheta)*cos(phi(nPhi))
-                  yL=sinTheta(nTheta)*sin(phi(nPhi))
-                  zL=cosTheta(nTheta)
-                  rH=sqrt((xS(nS)-xL)**2 + (yS(nS)-yL)**2+(zS(nS)-zL)**2)
-                  !------ Opening angleL with peak value vector:
-                  angleL=two*abs(asin(rH/2))
-                  if ( angleL <= widthS(nS) ) then
-                     sCMB(nPhi,nThetaB) = (cos(angleL/widthS(nS)*pi)+1)/2
-                  else
-                     sCMB(nPhi,nThetaB)=0.0_cp
-                  end if
-               end do
-#ifndef WITH_SHTNS
-               sCMB(n_phi_max+1,nThetaB)=0.0_cp
-               sCMB(n_phi_max+2,nThetaB)=0.0_cp
-#endif
+         do nPhi=1,n_phi_max
+            do nTheta=1,n_theta_max
+               xL=sinTheta(nTheta)*cos(phi(nPhi))
+               yL=sinTheta(nTheta)*sin(phi(nPhi))
+               zL=cosTheta(nTheta)
+               rH=sqrt((xS(nS)-xL)**2 + (yS(nS)-yL)**2+(zS(nS)-zL)**2)
+               !------ Opening angleL with peak value vector:
+               angleL=two*abs(asin(rH/2))
+               if ( angleL <= widthS(nS) ) then
+                  sCMB(nTheta,nPhi)=(cos(angleL/widthS(nS)*pi)+1)/2
+               else
+                  sCMB(nTheta,nPhi)=0.0_cp
+               end if
             end do
-         !------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-            if ( .not. l_axi ) call fft_thetab(sCMB,-1)
-            call legTF1(nThetaStart,sLM,sCMB)
-#endif
+         end do
+         call scal_to_SH(sCMB, sLM, l_max)
 
-         end do ! Loop over theta blocks
-#ifdef WITH_SHTNS
-         call spat_to_SH(sCMB, sLM)
-#endif
-
-      !--- sFac describes the linear dependence of the (l=0,m=0) mode
-      !    on the amplitude peakS, SQRT(4*pi) is a normalisation factor
-      !    according to the spherical harmonic function form chosen here.
+         !--- sFac describes the linear dependence of the (l=0,m=0) mode
+         !    on the amplitude peakS, SQRT(4*pi) is a normalisation factor
+         !    according to the spherical harmonic function form chosen here.
          sFac(nS)=real(sLM(st_map%lm2(0,0)))*osq4pi
 
       end do ! Loop over peak
@@ -677,9 +621,9 @@ contains
       !-- Value due to prescribed (l=0,m=0) contribution
       s00P=real(tops(0,0))*osq4pi
       if ( s00P == 0.0_cp .and. impS < 0 ) then
-         write(*,*) '! No relative amplitudes possible!'
-         write(*,*) '! for impS<0 because the mean value!'
-         write(*,*) '! is zero! Refince s_top?'
+         write(output_unit,*) '! No relative amplitudes possible!'
+         write(output_unit,*) '! for impS<0 because the mean value!'
+         write(output_unit,*) '! is zero! Refince s_top?'
          call abortRun('Stop run in init')
       end if
       if ( impS > 0 ) s00P=one
@@ -711,53 +655,35 @@ contains
       !--- Now get the total thing so that the mean (l=0,m=0) due
       !    to the peaks is zero. The (l=0,m=0) contribution is
       !    determined (prescribed) by other means.
-      nTheta=0
-      do n=1,nThetaBs ! loop over the theta blocks
 
-         nThetaStart=(n-1)*sizeThetaB+1
-         do nThetaB=1,sizeThetaB
-            nTheta=nTheta+1
-            do nPhi=1,n_phi_max
-               xL=sinTheta(nTheta)*cos(phi(nPhi))
-               yL=sinTheta(nTheta)*sin(phi(nPhi))
-               zL=cosTheta(nTheta)
-               sCMB(nPhi,nThetaB)=-s00
-               do nS=1,n_impS
-                  rH=sqrt((xS(nS)-xL)**2 + (yS(nS)-yL)**2+(zS(nS)-zL)**2)
-                  !------ Opening angle with peak value vector:
-                  angleL=two*abs(asin(rH/2))
-                  if ( angleL <= widthS(nS) )                &
-                  &  sCMB(nPhi,nThetaB)=sCMB(nPhi,nThetaB) + &
-                  &                     amp(nS)*(cos(angleL/widthS(nS)*pi)+1)/2
-               end do
+      do nPhi=1,n_phi_max
+         do nTheta=1,n_theta_max
+            xL=sinTheta(nTheta)*cos(phi(nPhi))
+            yL=sinTheta(nTheta)*sin(phi(nPhi))
+            zL=cosTheta(nTheta)
+            sCMB(nTheta,nPhi)=-s00
+            do nS=1,n_impS
+               rH=sqrt((xS(nS)-xL)**2 + (yS(nS)-yL)**2+(zS(nS)-zL)**2)
+               !------ Opening angle with peak value vector:
+               angleL=two*abs(asin(rH/2))
+               if ( angleL <= widthS(nS) )              &
+               &  sCMB(nTheta,nPhi)=sCMB(nTheta,nPhi) + &
+               &                    amp(nS)*(cos(angleL/widthS(nS)*pi)+1)/2
             end do
-#ifndef WITH_SHTNS
-            sCMB(n_phi_max+1,nThetaB)=0.0_cp
-            sCMB(n_phi_max+2,nThetaB)=0.0_cp
-#endif
          end do
-      !------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-         if ( .not. l_axi ) call fft_thetab(sCMB,-1)
-         call legTF1(nThetaStart,sLM,sCMB)
-#endif
+      end do
 
-      end do ! Loop over theta blocks
-#ifdef WITH_SHTNS
-      call spat_to_SH(sCMB, sLM)
-#endif
-
+      call scal_to_SH(sCMB, sLM, l_max)
 
       !--- Finally store the boundary condition and care for
       !    the fact that peakS provides the relative amplitudes
       !    in comparison to the (l=0,m=0) contribution when impS<0:
       !    Note that the (l=0,m=0) has to be determined by other means
       !    for example by setting: s_top= 0 0 -1 0
-      do m=0,l_max,minc
-         do l=m,l_max
-            lm=st_map%lmP2(l,m)
-            if ( l <= l_max .and. l > 0 ) tops(l,m)=tops(l,m)+sLM(lm)
-         end do
+      do lm=1,lm_max
+         l = st_map%lm2l(l)
+         m = st_map%lm2m(m)
+         if ( l <= l_max .and. l > 0 ) tops(l,m)=tops(l,m)+sLM(lm)
       end do
 
    end subroutine initS
@@ -793,21 +719,20 @@ contains
 
       !-- Local variables:
       integer :: n_r,lm,l,m,lm00
-      real(cp) :: x,rr,c_r,c_i,xi_r,xi_i
+      real(cp) :: x,c_r,c_i,xi_r,xi_i
       real(cp) :: ra1,ra2
       real(cp) :: xi0(n_r_max),xi1(n_r_max)
 
-      integer :: nTheta,n,nThetaStart,nThetaB,nPhi,nXi
+      integer :: nTheta,nPhi,nXi
       real(cp) :: xL,yL,zL,rH,angleL,xi00,xi00P
       real(cp) :: mata(n_impXi_max,n_impXi_max)
       real(cp) :: amp(n_impXi_max)
       integer :: pivot(n_impXi_max)
       real(cp) :: xXi(n_impXi_max),yXi(n_impXi_max)
       real(cp) :: zXi(n_impXi_max),xiFac(n_impXi_max)
-      real(cp) :: xiCMB(nrp,nfs)
-      complex(cp) :: xiLM(lmP_max)
-      integer :: info,i,j,l1,m1,fileHandle
-
+      real(cp) :: xiCMB(nlat_padded,n_phi_max)
+      complex(cp) :: xiLM(lm_max)
+      integer :: info,i,j,fileHandle
 
       lm00=lo_map%lm2(0,0)
 
@@ -831,20 +756,32 @@ contains
          xi1(n_r)=one-three*x**2+three*x**4-x**6
       end do
 
-      if ( init_xi1 < 100 .and. init_xi1 > 0 ) then
+      if ( l_onset ) then
+         !-- same amplitude on all modes
+         do n_r=1,n_r_max
+            do lm=llm,ulm ! all modes except l=m=0 carry the same function
+               l = lo_map%lm2l(lm)
+               if ( l == 0 ) cycle
+               xi(lm,n_r)=amp_xi1*xi1(n_r)
+            end do
+         end do
+
+      else if ( init_xi1 < 100 .and. init_xi1 > 0 ) then
 
       !-- Random noise initialization of all (l,m) modes exept (l=0,m=0):
 
-         rr=random(one)
-         do lm=max(llm,2),ulm
-            m1 = lo_map%lm2m(lm)
-            l1 = lo_map%lm2l(lm)
-            ra1=(-one+two*random(0.0_cp))*amp_xi1/(real(l1,cp))**(init_xi1-1)
-            ra2=(-one+two*random(0.0_cp))*amp_xi1/(real(l1,cp))**(init_xi1-1)
+         do lm=llm,ulm
+            l = lo_map%lm2l(lm)
+            if ( l == 0 ) cycle
+            m = lo_map%lm2m(lm)
+            call random_number(ra1)
+            call random_number(ra2)
+            ra1=(-one+two*ra1)*amp_xi1/(real(l,cp))**(init_xi1-1)
+            ra2=(-one+two*ra2)*amp_xi1/(real(l,cp))**(init_xi1-1)
             do n_r=1,n_r_max
                c_r=ra1*xi1(n_r)
                c_i=ra2*xi1(n_r)
-               if ( m1 > 0 ) then  ! non axisymmetric modes
+               if ( m > 0 ) then  ! non axisymmetric modes
                   xi(lm,n_r)=xi(lm,n_r)+cmplx(c_r,c_i,kind=cp)
                else
                   xi(lm,n_r)=xi(lm,n_r)+cmplx(c_r,0.0_cp,kind=cp)
@@ -862,13 +799,13 @@ contains
          m=mod(init_xi1,100)
          if ( l > 99 ) m=mod(init_xi1,1000)
          if ( mod(m,minc) /= 0 ) then
-            write(*,*) '! Wave number of mode for chemical composition initialisation'
-            write(*,*) '! not compatible with phi-symmetry:',m
+            write(output_unit,*) '! Wave number of mode for chemical composition initialisation'
+            write(output_unit,*) '! not compatible with phi-symmetry:',m
             call abortRun('Stop run in init')
          end if
          if ( l > l_max .or. l < m ) then
-            write(*,*) '! Degree of mode for chemical composition initialisation'
-            write(*,*) '! > l_max or < m !',l
+            write(output_unit,*) '! Degree of mode for chemical composition initialisation'
+            write(output_unit,*) '! > l_max or < m !',l
             call abortRun('Stop run in init')
          end if
          lm=lo_map%lm2(l,m)
@@ -879,7 +816,7 @@ contains
                xi(lm,n_r)=xi(lm,n_r)+cmplx(c_r,0.0_cp,kind=cp)
             end do
 
-            write(*,'(/'' ! Chemical composition initialized at mode:'', &
+            write(output_unit,'(/'' ! Chemical composition initialized at mode:'', &
                 &  '' l='',i4,'' m='',i4,'' Ampl='',f8.5)') l,m,amp_s1
          end if
 
@@ -887,14 +824,14 @@ contains
          if ( init_xi2 > 99 ) then
             m=mod(init_xi2,100)
             if ( mod(m,minc) /= 0 ) then
-               write(*,*) '! Wave number of mode for chemical composition initialisation'
-               write(*,*) '! not compatible with phi-symmetry:',m
+               write(output_unit,*) '! Wave number of mode for chemical composition initialisation'
+               write(output_unit,*) '! not compatible with phi-symmetry:',m
                call abortRun('Stop run in init')
             end if
             l=init_xi2/100
             if ( l > l_max .or. l < m ) then
-               write(*,*) '! Degree of mode for chemical composition initialisation'
-               write(*,*) '! > l_max or < m !',l
+               write(output_unit,*) '! Degree of mode for chemical composition initialisation'
+               write(output_unit,*) '! > l_max or < m !',l
                call abortRun('Stop run in init')
             end if
 
@@ -920,14 +857,10 @@ contains
 
       end if
 
-      if ( impXi == 0 ) then
-         return
-      end if
+      if ( impXi == 0 ) return
 
       !-- Now care for the prescribed boundary condition:
-      if ( minc /= 1 ) then
-         call abortRun('! impXi doesnt work for minc /= 1')
-      end if
+      if ( minc /= 1 ) call abortRun('! impXi doesnt work for minc /= 1')
 
       if ( abs(impXi) == 1 ) then
          n_impXi=2
@@ -948,44 +881,26 @@ contains
          yXi(nXi)=sin(thetaXi(nXi))*sin(phiXi(nXi))
          zXi(nXi)=cos(thetaXi(nXi))
 
-         nTheta=0
-         do n=1,nThetaBs ! loop over the theta blocks
-
-            nThetaStart=(n-1)*sizeThetaB+1
-            do nThetaB=1,sizeThetaB
-               nTheta=nTheta+1
-               do nPhi=1,n_phi_max
-                  xL=sinTheta(nTheta)*cos(phi(nPhi))
-                  yL=sinTheta(nTheta)*sin(phi(nPhi))
-                  zL=cosTheta(nTheta)
-                  rH=sqrt((xXi(nXi)-xL)**2 + (yXi(nXi)-yL)**2+(zXi(nXi)-zL)**2)
-                  !------ Opening angleL with peak value vector:
-                  angleL=two*abs(asin(rH/2))
-                  if ( angleL <= widthXi(nXi) ) then
-                     xiCMB(nPhi,nThetaB) = half*(cos(angleL/widthXi(nXi)*pi)+1)
-                  else
-                     xiCMB(nPhi,nThetaB)=0.0_cp
-                  end if
-               end do
-#ifndef WITH_SHTNS
-               xiCMB(n_phi_max+1,nThetaB)=0.0_cp
-               xiCMB(n_phi_max+2,nThetaB)=0.0_cp
-#endif
+         do nPhi=1,n_phi_max
+            do nTheta=1,n_theta_max
+               xL=sinTheta(nTheta)*cos(phi(nPhi))
+               yL=sinTheta(nTheta)*sin(phi(nPhi))
+               zL=cosTheta(nTheta)
+               rH=sqrt((xXi(nXi)-xL)**2 + (yXi(nXi)-yL)**2+(zXi(nXi)-zL)**2)
+               !------ Opening angleL with peak value vector:
+               angleL=two*abs(asin(rH/2))
+               if ( angleL <= widthXi(nXi) ) then
+                  xiCMB(nTheta,nPhi) = half*(cos(angleL/widthXi(nXi)*pi)+1)
+               else
+                  xiCMB(nTheta,nPhi)=0.0_cp
+               end if
             end do
-         !------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-            if ( .not. l_axi ) call fft_thetab(xiCMB,-1)
-            call legTF1(nThetaStart,xiLM,xiCMB)
-#endif
+         end do
+         call scal_to_SH(xiCMB, xiLM, l_max)
 
-         end do ! Loop over theta blocks
-#ifdef WITH_SHTNS
-         call spat_to_SH(xiCMB, xiLM)
-#endif
-
-      !--- xiFac describes the linear dependence of the (l=0,m=0) mode
-      !    on the amplitude peakXi, sqrt(4*pi) is a normalisation factor
-      !    according to the spherical harmonic function form chosen here.
+         !--- xiFac describes the linear dependence of the (l=0,m=0) mode
+         !    on the amplitude peakXi, sqrt(4*pi) is a normalisation factor
+         !    according to the spherical harmonic function form chosen here.
          xiFac(nXi)=real(xiLM(st_map%lm2(0,0)))*osq4pi
 
       end do ! Loop over peak
@@ -993,9 +908,9 @@ contains
       !-- Value due to prescribed (l=0,m=0) contribution
       xi00P=real(topxi(0,0))*osq4pi
       if ( xi00P == 0.0_cp .and. impXi < 0 ) then
-         write(*,*) '! No relative amplitudes possible!'
-         write(*,*) '! for impXi<0 because the mean value!'
-         write(*,*) '! is zero! Refince xi_top?'
+         write(output_unit,*) '! No relative amplitudes possible!'
+         write(output_unit,*) '! for impXi<0 because the mean value!'
+         write(output_unit,*) '! is zero! Refince xi_top?'
          call abortRun('Stop run in init')
       end if
       if ( impXi > 0 ) xi00P=one
@@ -1027,57 +942,39 @@ contains
       !--- Now get the total thing so that the mean (l=0,m=0) due
       !    to the peaks is zero. The (l=0,m=0) contribution is
       !    determined (prescribed) by other means.
-      nTheta=0
-      do n=1,nThetaBs ! loop over the theta blocks
-
-         nThetaStart=(n-1)*sizeThetaB+1
-         do nThetaB=1,sizeThetaB
-            nTheta=nTheta+1
-            do nPhi=1,n_phi_max
-               xL=sinTheta(nTheta)*cos(phi(nPhi))
-               yL=sinTheta(nTheta)*sin(phi(nPhi))
-               zL=cosTheta(nTheta)
-               xiCMB(nPhi,nThetaB)=-xi00
-               do nXi=1,n_impXi
-                  rH=sqrt((xXi(nXi)-xL)**2 + (yXi(nXi)-yL)**2+(zXi(nXi)-zL)**2)
-                  !------ Opening angle with peak value vector:
-                  angleL=two*abs(asin(rH/2))
-                  if ( angleL <= widthXi(nXi) )              &
-                     xiCMB(nPhi,nThetaB)=xiCMB(nPhi,nThetaB) + &
-                                        amp(nXi)*half*(cos(angleL/widthXi(nXi)*pi)+1)
-               end do
+      do nPhi=1,n_phi_max
+         do nTheta=1,n_theta_max
+            xL=sinTheta(nTheta)*cos(phi(nPhi))
+            yL=sinTheta(nTheta)*sin(phi(nPhi))
+            zL=cosTheta(nTheta)
+            xiCMB(nTheta,nPhi)=-xi00
+            do nXi=1,n_impXi
+               rH=sqrt((xXi(nXi)-xL)**2 + (yXi(nXi)-yL)**2+(zXi(nXi)-zL)**2)
+               !------ Opening angle with peak value vector:
+               angleL=two*abs(asin(rH/2))
+               if ( angleL <= widthXi(nXi) )              &
+                  xiCMB(nTheta,nPhi)=xiCMB(nTheta,nPhi) + &
+                                     amp(nXi)*half*(cos(angleL/widthXi(nXi)*pi)+1)
             end do
-#ifndef WITH_SHTNS
-            xiCMB(n_phi_max+1,nThetaB)=0.0_cp
-            xiCMB(n_phi_max+2,nThetaB)=0.0_cp
-#endif
          end do
-      !------ Transform to spherical hamonic space for each theta block
-#ifndef WITH_SHTNS
-         if ( .not. l_axi ) call fft_thetab(xiCMB,-1)
-         call legTF1(nThetaStart,xiLM,xiCMB)
-#endif
+      end do
 
-      end do ! Loop over theta blocks
-#ifdef WITH_SHTNS
-      call spat_to_SH(xiCMB, xiLM)
-#endif
+      call scal_to_SH(xiCMB, xiLM, l_max)
 
       !--- Finally store the boundary condition and care for
       !    the fact that peakS provides the relative amplitudes
       !    in comparison to the (l=0,m=0) contribution when impS<0:
       !    Note that the (l=0,m=0) has to be determined by other means
       !    for example by setting: s_top= 0 0 -1 0
-      do m=0,l_max,minc
-         do l=m,l_max
-            lm=st_map%lmP2(l,m)
-            if ( l <= l_max .and. l > 0 ) topxi(l,m)=topxi(l,m)+xiLM(lm)
-         end do
+      do lm=1,lm_max
+         l = st_map%lm2l(l)
+         m = st_map%lm2m(m)
+         if ( l <= l_max .and. l > 0 ) topxi(l,m)=topxi(l,m)+xiLM(lm)
       end do
 
    end subroutine initXi
 !---------------------------------------------------------------------------
-   subroutine initB(b,aj,b_ic,aj_ic,lorentz_torque_ic,lorentz_torque_ma)
+   subroutine initB(b, aj, b_ic, aj_ic)
       !
       ! Purpose of this subroutine is to initialize the magnetic field
       ! according to the control parameters imagcon and init_b1/2.
@@ -1086,16 +983,13 @@ contains
       !
 
       !-- Output variables:
-      real(cp), intent(out) :: lorentz_torque_ic
-      real(cp), intent(out) :: lorentz_torque_ma
-
       complex(cp), intent(inout) :: b(llmMag:ulmMag,n_r_maxMag)
       complex(cp), intent(inout) :: aj(llmMag:ulmMag,n_r_maxMag)
       complex(cp), intent(inout) :: b_ic(llmMag:ulmMag,n_r_ic_max)
       complex(cp), intent(inout) :: aj_ic(llmMag:ulmMag,n_r_ic_max)
 
       !-- Local variables:
-      integer :: lm,lm0,l1,m1
+      integer :: lm,lm0,l,m
       integer :: n_r
       real(cp) :: b_pol,b_tor
       complex(cp) :: aj0(n_r_max+1)
@@ -1104,7 +998,7 @@ contains
 
       real(cp) :: b1(n_r_max)
       real(cp) :: b1_ic(n_r_ic_max)
-      real(cp) :: bR,bI,rr
+      real(cp) :: bR,bI
       real(cp) :: aVarCon,bVarCon
       integer :: bExp
 
@@ -1119,42 +1013,42 @@ contains
 
       if ( imagcon == -1 ) then
 
-      !----- impose l=1,m=0 poloidal field at ICB:
+         !----- impose l=1,m=0 poloidal field at ICB:
          lm0 = l1m0
          bpeakbot = -sqrt(third*pi)*r_icb**2*amp_b1
          bpeaktop = 0.0_cp
 
       else if ( imagcon == -2 ) then
 
-      !----- impose l=1,m=0 poloidal field at CMB:
+         !----- impose l=1,m=0 poloidal field at CMB:
          lm0 = l1m0
          bpeakbot = 0.0_cp
          bpeaktop = -sqrt(third*pi)*r_cmb**2*amp_b1
 
       else if ( imagcon == 1 ) then
 
-      !----- impose l=2,m=0 toroidal field at ICB:
+         !----- impose l=2,m=0 toroidal field at ICB:
          lm0 = l2m0
          bpeakbot = four*third*sqrt(pi/5.0_cp)*r_icb*amp_b1
          bpeaktop = 0.0_cp
 
       else if ( imagcon == 10 ) then
 
-      !----- impose l=2,m=0 toroidal field at ICB and CMB:
+         !----- impose l=2,m=0 toroidal field at ICB and CMB:
          lm0 = l2m0
          bpeakbot = four*third*sqrt(pi/5.0_cp)*r_icb*amp_b1
          bpeaktop = four*third*sqrt(pi/5.0_cp)*r_cmb*amp_b1
 
       else if ( imagcon == 11 ) then
 
-      !----- same as imagcon == 10 but opposite sign at CMB:
+         !----- same as imagcon == 10 but opposite sign at CMB:
          lm0 = l2m0
          bpeakbot = four*third*sqrt(pi/5.0_cp)*r_icb*amp_b1
          bpeaktop = -four*third*sqrt(pi/5.0_cp)*r_cmb*amp_b1
 
       else if ( imagcon == 12 ) then
 
-      !----- impose l=1,m=0 toroidal field at ICB and CMB:
+         !----- impose l=1,m=0 toroidal field at ICB and CMB:
          lm0 = l1m0
          bpeakbot = two*sqrt(third*pi)*r_icb*amp_b1
          bpeaktop = two*sqrt(third*pi)*r_cmb*amp_b1
@@ -1167,18 +1061,18 @@ contains
 
       else if ( imagcon == -10 ) then
 
-      !----- Test of variable conductivity case with analytical solution:
-      !      Assume the magnetic diffusivity is lambda=r**5, that the aspect ratio
-      !      is 0.5, and that there is no flow.
-      !      The analytical stationary solution for the (l=3,m=0) toroidal field
-      !      with bounday condition aj(r=r_ICB)=1, aj(r=r_CMB)=0 is then
-      !      given by jVarCon(r)!
-      !      A disturbed solution is used to initialize aj,
-      !      the disturbance should decay with time.
-      !      The solution is stored in file testVarCond.TAG at the end of the run,
-      !      where the first column denotes radius, the second is aj(l=3,m=0,r) and
-      !      the third is jVarCon(r). Second and third should be identical when
-      !      the stationary solution has been reached.
+         !----- Test of variable conductivity case with analytical solution:
+         !      Assume the magnetic diffusivity is lambda=r**5, that the aspect ratio
+         !      is 0.5, and that there is no flow.
+         !      The analytical stationary solution for the (l=3,m=0) toroidal field
+         !      with bounday condition aj(r=r_ICB)=1, aj(r=r_CMB)=0 is then
+         !      given by jVarCon(r)!
+         !      A disturbed solution is used to initialize aj,
+         !      the disturbance should decay with time.
+         !      The solution is stored in file testVarCond.TAG at the end of the run,
+         !      where the first column denotes radius, the second is aj(l=3,m=0,r) and
+         !      the third is jVarCon(r). Second and third should be identical when
+         !      the stationary solution has been reached.
          lm0=l3m0  ! This is l=3,m=0
          bpeakbot=one
          bpeaktop=0.0_cp
@@ -1194,10 +1088,10 @@ contains
       end if
 
       if ( init_b1 == 1 .or. imagcon > 0 ) then
-      !----- Conductive solution for toroidal field,
-      !      diffusion equation solved in j_cond, amplitude defined
-      !      by bpeaktop and bpeakbot respectively.
-      !      bpeakbot is only used for insulating inner core !
+         !----- Conductive solution for toroidal field,
+         !      diffusion equation solved in j_cond, amplitude defined
+         !      by bpeaktop and bpeakbot respectively.
+         !      bpeakbot is only used for insulating inner core !
          if ( llm <= lm0 .and. ulm >= lm0 ) then ! select processor
             call j_cond(lm0,aj0,aj0_ic)
             do n_r=1,n_r_max             ! Diffusive toroidal field
@@ -1211,10 +1105,10 @@ contains
          end if
 
       else if ( init_b1 == 2 ) then  ! l=1,m=0 analytical toroidal field
-      ! with a maximum of amp_b1 at mid-radius
-      ! between r_icb and r_cmb for an insulating
-      ! inner core and at r_cmb/2 for a conducting
-      ! inner core
+         ! with a maximum of amp_b1 at mid-radius
+         ! between r_icb and r_cmb for an insulating
+         ! inner core and at r_cmb/2 for a conducting
+         ! inner core
 
          if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
             b_tor=-two*amp_b1*sqrt(third*pi)  ! minus sign makes phi comp. > 0
@@ -1256,17 +1150,17 @@ contains
                aj_ic2=(one-aj_ic1)*r_icb*sin(arg)/cos(arg)
                do n_r=1,n_r_ic_max
                   b_ic(l1m0,n_r)=b_ic(l1m0,n_r)+b_pol*r_icb**2 * (    &
-                                            half*r_ic(n_r)**2/r_icb + &
-                                                         half*r_icb - &
-                                                    four*third*r_cmb )
+                  &                         half*r_ic(n_r)**2/r_icb + &
+                  &                                      half*r_icb - &
+                  &                                 four*third*r_cmb )
                end do
             else
                b_pol=amp_b1*sqrt(three*pi)/four
                do n_r=1,n_r_max
-                  b(l1m0,n_r)=b(l1m0,n_r)+ b_pol *     ( &
-                                             r(n_r)**3 - &
-                             four*third*r_cmb*r(n_r)**2 + &
-                          third*r_icb**4/r(n_r)    )
+                  b(l1m0,n_r)=b(l1m0,n_r)+ b_pol *     (  &
+                  &                          r(n_r)**3 -  &
+                  &          four*third*r_cmb*r(n_r)**2 + &
+                  &       third*r_icb**4*or1(n_r)    )
                end do
             end if
          end if
@@ -1283,8 +1177,8 @@ contains
                aj_ic2=(one-aj_ic1)*r_icb*sin(arg)/cos(arg)
                do n_r=1,n_r_ic_max
                   aj_ic(l2m0,n_r)=aj_ic(l2m0,n_r)+b_tor*             ( &
-                           aj_ic1*r_ic(n_r)*sin(pi*r_ic(n_r)/r_cmb) + &
-                                     aj_ic2*cos(pi*r_ic(n_r)/r_cmb) )
+                  &        aj_ic1*r_ic(n_r)*sin(pi*r_ic(n_r)/r_cmb) +  &
+                  &                  aj_ic2*cos(pi*r_ic(n_r)/r_cmb) )
                end do
             else
                b_pol=amp_b1*sqrt(three*pi)/four
@@ -1295,45 +1189,45 @@ contains
          end if
 
       else if ( init_b1 == 4 .or. imagcon == -1 ) then  ! l=1,m0 poloidal field
-      ! with max field amplitude amp_b1 at r_icb
-       if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
-          b_pol=-amp_b1*r_icb**3*sqrt(third*pi)
-          do n_r=1,n_r_max
-             b(l1m0,n_r)=b(l1m0,n_r)+b_pol*or1(n_r)
-          end do
-          if ( l_cond_ic ) then
-             do n_r=1,n_r_ic_max
-                b_ic(l1m0,n_r)=b_ic(l1m0,n_r)+b_pol/r_icb* &
-                               ( -three*half + half*(r_ic(n_r)/r_icb)**2 )
-             end do
-          end if
-       end if
+         ! with max field amplitude amp_b1 at r_icb
+         if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
+            b_pol=-amp_b1*r_icb**3*sqrt(third*pi)
+            do n_r=1,n_r_max
+               b(l1m0,n_r)=b(l1m0,n_r)+b_pol*or1(n_r)
+            end do
+            if ( l_cond_ic ) then
+               do n_r=1,n_r_ic_max
+                  b_ic(l1m0,n_r)=b_ic(l1m0,n_r)+b_pol/r_icb* &
+                                 ( -three*half + half*(r_ic(n_r)/r_icb)**2 )
+               end do
+            end if
+         end if
 
       else if ( init_b1 == 5 ) then  ! l=1,m0 poloidal field
-      ! constant j density, defined max field value amp_v1 at r_cmb
-       if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
-          if ( l_cond_ic ) then
-             b_pol=amp_b1*sqrt(three*pi)/r_cmb
-             do n_r=1,n_r_max
-                b(l1m0,n_r)=b(l1m0,n_r)+b_pol* (   r(n_r)**3 - &
-                            four*third*r_cmb * r(n_r)**2 )
-             end do
-             do n_r=1,n_r_ic_max
-                b_ic(l1m0,n_r)=b_ic(l1m0,n_r)+b_pol*r_icb**2 * &
-                   (-5.0_cp/6.0_cp*r_icb-four*third+half*r_ic(n_r)**2/r_icb)
-             end do
-          else
-             b_pol=amp_b1*sqrt(three*pi)/(r_cmb*(one-radratio**4))
-             do n_r=1,n_r_max
-                b(l1m0,n_r)=b(l1m0,n_r)+b_pol* (   r(n_r)**3 - &
-                                 four*third*r_cmb * r(n_r)**2 + &
-                                 third*r_icb**4 / r(n_r)    )
-             end do
-          end if
-       end if
+         ! constant j density, defined max field value amp_v1 at r_cmb
+         if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
+            if ( l_cond_ic ) then
+               b_pol=amp_b1*sqrt(three*pi)/r_cmb
+               do n_r=1,n_r_max
+                  b(l1m0,n_r)=b(l1m0,n_r)+b_pol* (   r(n_r)**3 - &
+                              four*third*r_cmb * r(n_r)**2 )
+               end do
+               do n_r=1,n_r_ic_max
+                  b_ic(l1m0,n_r)=b_ic(l1m0,n_r)+b_pol*r_icb**2 * &
+                     (-5.0_cp/6.0_cp*r_icb-four*third+half*r_ic(n_r)**2/r_icb)
+               end do
+            else
+               b_pol=amp_b1*sqrt(three*pi)/(r_cmb*(one-radratio**4))
+               do n_r=1,n_r_max
+                  b(l1m0,n_r)=b(l1m0,n_r)+b_pol* (   r(n_r)**3 - &
+                                   four*third*r_cmb * r(n_r)**2 + &
+                                   third*r_icb**4 / r(n_r)    )
+               end do
+            end if
+         end if
 
       else if ( init_b1 == 6 ) then  ! l=1,m=0 poloidal field , constant in r !
-      ! no potential at r_cmb but simple
+         ! no potential at r_cmb but simple
          if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
             b_pol=amp_b1
             do n_r=1,n_r_max
@@ -1347,7 +1241,7 @@ contains
          end if
 
       else if ( init_b1 == 7 .or. imagcon == -2 ) then  ! l=1,m0 poloidal field
-      ! which is potential field at r_cmb
+         ! which is potential field at r_cmb
          if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
             b_pol=amp_b1*5.0_cp*half*sqrt(third*pi)*r_icb**2
             do n_r=1,n_r_max
@@ -1363,7 +1257,7 @@ contains
          end if
 
       else if ( init_b1 == 8 ) then  ! l=1,m0 pol. field, l=2,m=0 toroidal field
-      ! which is potential field at r_cmb
+         ! which is potential field at r_cmb
          if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
             b_pol=amp_b1*5.0_cp*half*sqrt(third*pi)*r_icb**2
             do n_r=1,n_r_max
@@ -1393,7 +1287,7 @@ contains
          end if
 
       else if ( init_b1 == 9 ) then  ! l=2,m0 poloidal field
-      ! which is potential field at r_cmb
+         ! which is potential field at r_cmb
          if ( llm <= l2m0 .and. ulm >= l2m0 ) then ! select processor
             b_pol=amp_b1*7.0_cp/6.0_cp*sqrt(pi/5.0_cp)*r_icb**2*radratio
             do n_r=1,n_r_max
@@ -1410,23 +1304,23 @@ contains
 
       else if ( init_b1 == 10 ) then  ! only equatorial dipole
 
-       if ( l1m1 <= 0 ) then
-          call abortRun('! Can not initialize l=1,m=1 !')
-       end if
+         if ( l1m1 <= 0 ) then
+            call abortRun('! Can not initialize l=1,m=1 !')
+         end if
 
-       if ( llm <= l1m1 .and. ulm >= l1m1 ) then ! select processor
-          b_pol=amp_b1*5.0_cp*half*sqrt(third*pi)*r_icb**2
-          do n_r=1,n_r_max
-             b(l1m1,n_r)=b(l1m1,n_r)+b_pol*(r(n_r)/r_icb)**2 * &
-                          ( one - three/5.0_cp*(r(n_r)/r_cmb)**2 )
-          end do
-          if ( l_cond_ic ) then
-             do n_r=1,n_r_ic_max
-                b_ic(l1m1,n_r)=b_ic(l1m1,n_r)+b_pol * &
-                               ( one - three/5.0_cp*(r_ic(n_r)/r_cmb)**2 )
-             end do
-          end if
-       end if
+         if ( llm <= l1m1 .and. ulm >= l1m1 ) then ! select processor
+            b_pol=amp_b1*5.0_cp*half*sqrt(third*pi)*r_icb**2
+            do n_r=1,n_r_max
+               b(l1m1,n_r)=b(l1m1,n_r)+b_pol*(r(n_r)/r_icb)**2 * &
+                            ( one - three/5.0_cp*(r(n_r)/r_cmb)**2 )
+            end do
+            if ( l_cond_ic ) then
+               do n_r=1,n_r_ic_max
+                  b_ic(l1m1,n_r)=b_ic(l1m1,n_r)+b_pol * &
+                                 ( one - three/5.0_cp*(r_ic(n_r)/r_cmb)**2 )
+               end do
+            end if
+         end if
 
       else if ( init_b1 < 0 ) then  ! l,m mixture, random init
 
@@ -1440,19 +1334,20 @@ contains
             end do
          end if
 
-     !-- Random noise initialization of all (l,m) modes exept (l=0,m=0):
-         rr=random(one)
+         !-- Random noise initialization of all (l,m) modes exept (l=0,m=0):
          do lm=llm,ulm
-            l1=lo_map%lm2l(lm)
-            m1=lo_map%lm2m(lm)
-            if ( l1 > 0 ) then
-               bR=(-one+two*random(0.0_cp))*amp_b1/(real(l1,cp))**(bExp-1)
-               bI=(-one+two*random(0.0_cp))*amp_b1/(real(l1,cp))**(bExp-1)
+            l=lo_map%lm2l(lm)
+            m=lo_map%lm2m(lm)
+            if ( l > 0 ) then
+               call random_number(bR)
+               call random_number(bI)
+               bR=(-one+two*bR)*amp_b1/(real(l,cp))**(bExp-1)
+               bI=(-one+two*bI)*amp_b1/(real(l,cp))**(bExp-1)
             else
                bR=0.0_cp
                bI=0.0_cp
             end if
-            if ( m1 == 0 ) bI=0.0_cp
+            if ( m == 0 ) bI=0.0_cp
             do n_r=1,n_r_max
                b(lm,n_r)=b(lm,n_r) + cmplx(bR*b1(n_r),bI*b1(n_r),kind=cp)
             end do
@@ -1499,10 +1394,10 @@ contains
          end if
 
       else if ( init_b1 == 21 ) then ! toroidal field created by inner core rotation
-      ! equatorialy symmetric
+         ! equatorialy symmetric
          if ( llm <= l1m0 .and. ulm >= l1m0 ) then ! select processor
             do n_r=1,n_r_max
-               aj0(n_r)=amp_b1*(r_icb/r(n_r))**6
+               aj0(n_r)=amp_b1*(r_icb*or1(n_r))**6
             end do
             do n_r=1,n_r_max             ! Diffusive toroidal field
                aj(l1m0,n_r)=aj(l1m0,n_r)+aj0(n_r)
@@ -1515,10 +1410,10 @@ contains
          end if
 
       else if ( init_b1 == 22 ) then ! toroidal field created by inner core rotation
-      ! equatorialy asymmetric
+         ! equatorialy asymmetric
          if ( llm <= l2m0 .and. ulm >= l2m0 ) then ! select processor
             do n_r=1,n_r_max
-               aj0(n_r)=amp_b1*(r_icb/r(n_r))**6
+               aj0(n_r)=amp_b1*(r_icb*or1(n_r))**6
             end do
             do n_r=1,n_r_max             ! Diffusive toroidal field
                aj(l2m0,n_r)=aj(l2m0,n_r)+aj0(n_r)
@@ -1532,11 +1427,181 @@ contains
 
       end if
 
-      !-- Too lazy to calculate these:
-      lorentz_torque_ic=0.0_cp
-      lorentz_torque_ma=0.0_cp
-
    end subroutine initB
+!-----------------------------------------------------------------------
+   subroutine initPhi(s, phi)
+      !
+      ! This subroutine sets the initial phase field distribution. It follows
+      ! a tanh function with a width of size epsPhase
+      !
+
+      !-- Input variable
+      complex(cp), intent(inout) :: s(llm:ulm,n_r_max) ! Entropy/Temperature
+
+      !-- In/out variable
+      complex(cp), intent(inout) :: phi(llm:ulm,n_r_max) ! Phase field
+
+      !-- Local variables:
+      real(cp) :: temp00(n_r_max), rmelt, phi0(n_r_max), rphase, x(4), y(4)
+      integer :: lm00, n_r, n_r_melt, l, lm, n_p, n_t, nPstart, nPstop
+      integer :: n_r_phase, n_r_start, n_r_stop
+      complex(cp), allocatable :: s_Rloc(:,:), phi_Rloc(:,:)
+      real(cp), allocatable :: temp_Rloc(:,:,:), temp_Ploc(:,:,:)
+      real(cp), allocatable :: phase_Rloc(:,:,:), phase_Ploc(:,:,:)
+      type(load), allocatable :: phi_balance(:)
+
+      if ( init_phi == 1 ) then
+         !-- The initial phase field is set as a tanh function of width epsPhase
+         !-- centered at the melting temperature
+         lm00 = lo_map%lm2(0,0) ! spherically-symmetric mode
+         if ( llm <= lm00 .and. ulm >= lm00 ) then
+            temp00(:)=osq4pi * real(s(lm00,:))
+            do n_r=2,n_r_max
+               if ( temp00(n_r-1) < tmelt .and. temp00(n_r) >= tmelt ) then
+                  n_r_melt=n_r
+               end if
+            end do
+            rmelt=r(n_r_melt)
+            phi0(:)=half*(one+tanh((r(:)-rmelt)/two/sqrt(two)/epsPhase))
+            phi(lm00,:)=sq4pi*cmplx(phi0,0.0_cp,cp)
+         end if
+
+#ifdef WITH_MPI
+         call MPI_Bcast(phi0,n_r_max,MPI_DEF_REAL,0,MPI_COMM_WORLD,ierr)
+#endif
+
+         !-- Make sure there is no temperature perturbation in the solid phase
+         if ( init_s1 /= 0 .or. init_s2 /= 0 ) then
+            do n_r=1,n_r_max
+               do lm=llm,ulm
+                  l = lo_map%lm2l(lm)
+                  if ( l == 0 ) cycle
+                  s(lm,n_r)=s(lm,n_r)*(one-phi0(n_r))
+               end do
+            end do
+         end if
+
+      else if ( init_phi == 2 ) then
+         !-- Compute locally the temperature distribution in the physical space
+         !-- and then get the corresponding phase field
+         allocate(s_Rloc(lm_max,nRstart:nRstop), phi_Rloc(lm_max,nRstart:nRstop))
+         allocate( phi_balance(0:n_procs-1) )
+         call getBlocks(phi_balance, n_phi_max, n_procs)
+         nPstart = phi_balance(rank)%nStart
+         nPstop = phi_balance(rank)%nStop
+         allocate( phase_Rloc(nlat_padded,n_phi_max,nRstart:nRstop) )
+         allocate( temp_Rloc(nlat_padded,n_phi_max,nRstart:nRstop) )
+         allocate( phase_Ploc(nlat_padded,nPstart:nPstop,n_r_max) )
+         allocate( temp_Ploc(nlat_padded,nPstart:nPstop,n_r_max) )
+
+         !-- Bring the temperature field on the R-distributed version
+         call lo2r_one%transp_lm2r(s, s_Rloc)
+
+         !-- Compute the temperature on the physical grid
+         do n_r=nRstart,nRstop
+            call scal_to_spat(s_Rloc(:,n_r), temp_Rloc(:,:,n_r), l_max)
+         end do
+
+         !-- Transpose the temperature on a phi-distributed grid
+         call transp_R2Phi(temp_Rloc, temp_Ploc, phi_balance, nPstart, nPstop)
+
+         !-- Determine the melt radius by 4th order Lagrangian smoothing
+         do n_p=nPstart,nPstop
+            do n_t=1,n_theta_max
+               !-- Determine the radial level where T=Tmelt
+               n_r_phase=1
+               do n_r=2,n_r_max
+                  if ( temp_Ploc(n_t,n_p,n_r) > tmelt .and. &
+                  &    temp_Ploc(n_t,n_p,n_r-1) < tmelt ) then
+                     n_r_phase=n_r
+                  end if
+               end do
+
+               !-- 4th order Lagrangian interpolation of melting point
+               if ( n_r_phase == n_r_cmb ) then
+                  rphase=r_cmb
+               else
+                  if ( n_r_phase == n_r_cmb+1 ) then
+                     n_r_start=n_r_phase-1
+                     n_r_stop =n_r_phase+2
+                  else if ( n_r_phase == n_r_icb ) then
+                     n_r_start=n_r_phase-3
+                     n_r_stop =n_r_phase
+                  else
+                     n_r_start=n_r_phase-2
+                     n_r_stop =n_r_phase+1
+                  end if
+                  x(:)=temp_Ploc(n_t,n_p,n_r_start:n_r_stop)
+                  y(:)=r(n_r_start:n_r_stop)
+                  rphase=lagrange_interp(x,tmelt,y)
+               end if
+
+               phase_Ploc(n_t,n_p,:)=half*(one+tanh((r(:)-rphase)/two/epsPhase))
+
+            end do
+         end do
+
+         !-- Transpose phase from phi-distributed to r-distributed
+         call transp_Phi2R(phase_Ploc, phase_Rloc, phi_balance, nPstart, nPstop)
+
+         !-- Now bring the phase back to spectral space
+         do n_r=nRstart,nRstop
+            call scal_to_SH(phase_Rloc(:,:,n_r), phi_Rloc(:,n_r), l_max)
+         end do
+
+         !-- Final transpose to get the LM-distributed array for the phase field
+         call r2lo_one%transp_r2lm(phi_Rloc, phi)
+
+         deallocate( temp_Rloc, temp_Ploc, phase_Rloc, phase_Ploc, phi_balance )
+         deallocate( s_Rloc, phi_Rloc )
+      end if
+
+   end subroutine initPhi
+!-----------------------------------------------------------------------
+   subroutine initF(bodyForce)
+      !
+      ! This subroutine is used to initialize a toroidal body force
+      ! of the form (-a s + b s^2) \vec{e}_\phi in lm space. This can easily
+      ! be extended to other forms of body forces prescribed in physical space.
+      !
+
+      !-- In/out variables
+      complex(cp), intent(inout) :: bodyForce(llm:ulm,n_r_max)
+
+      !-- Local variables
+      complex(cp) :: bf_Rloc(lm_max,nRstart:nRstop), bfLM(lm_max)
+      integer :: lm,l,m,nR,nTheta,nPhi
+      real(cp) :: bf_spat(nlat_padded,n_phi_max)
+      real(cp) :: eta_fac, a_force, b_force
+
+      call lo2r_one%transp_lm2r(bodyForce, bf_Rloc)
+
+      eta_fac = 15.0_cp*pi/64.0_cp * (1.0_cp - radratio**6)/(1.0_cp-radratio**5)
+      a_force = eta_fac / (r_cmb * (1.0_cp - eta_fac))
+      b_force = 1.0_cp / (r_cmb**2 * ( 1.0_cp - eta_fac ))
+
+      ! This is the curl of the body force, \vec{e}_r\cdot \nabla\times\vec{F}
+
+      do nR = nRstart,nRstop
+         do nPhi=1,n_phi_max
+            do nTheta=1,n_theta_max
+               bf_spat(nTheta,nPhi) = ampForce   *       &
+               &                      (- 2.0_cp * a_force         &
+               &                       + 3.0_cp * b_force * r(nR) &
+               &                       * sinTheta(nTheta) ) * cosTheta(nTheta)
+            end do
+         end do
+
+         call scal_to_SH(bf_spat, bfLM, l_max)
+
+         !------- body force is now in spherical harmonic space
+         bf_Rloc(:,nR)=bfLM(:)
+
+      end do ! close loop over radial points
+
+      call r2lo_one%transp_r2lm(bf_Rloc, bodyForce)
+
+   end subroutine initF
 !-----------------------------------------------------------------------
    subroutine j_cond(lm0, aj0, aj0_ic)
       !
@@ -1552,7 +1617,8 @@ contains
       complex(cp), intent(out) :: aj0_ic(:) ! aj(l=0,m=0) in the inner core
 
       !-- Local variables
-      integer :: n_cheb,n_r,info,n_r_real,n_r_out
+      integer :: n_cheb,n_r,info,n_r_real,n_r_out, l
+      real(cp) :: dL
       complex(cp) :: rhs(n_r_tot)
       complex(cp) :: work_l_ic(n_r_ic_max)
       real(cp), allocatable :: jMat(:,:)
@@ -1561,6 +1627,9 @@ contains
       allocate( jMat(n_r_tot,n_r_tot) )
       allocate( jPivot(n_r_tot) )
 
+      l = lo_map%lm2l(lm0)
+      dL = real(l*(l+1),cp)
+
       n_r_real = n_r_max
       if ( l_cond_ic ) n_r_real = n_r_real+n_r_ic_max
 
@@ -1568,10 +1637,10 @@ contains
       do n_r_out=1,rscheme_oc%n_max
          do n_r=2,n_r_max-1
             jMat(n_r,n_r_out)= rscheme_oc%rnorm *                   &
-              &    hdif_B(lm0)*dLh(lm0)*opm*lambda(n_r)*or2(n_r) *  &
-              &       (            rscheme_oc%d2rMat(n_r,n_r_out) + &
-              &       dLlambda(n_r)*rscheme_oc%drMat(n_r,n_r_out) - &
-              &    dLh(lm0)*or2(n_r)*rscheme_oc%rMat(n_r,n_r_out) )
+            &              hdif_B(l)*dL*opm*lambda(n_r)*or2(n_r) *  &
+            &         (            rscheme_oc%d2rMat(n_r,n_r_out) + &
+            &         dLlambda(n_r)*rscheme_oc%drMat(n_r,n_r_out) - &
+            &            dL*or2(n_r)*rscheme_oc%rMat(n_r,n_r_out) )
          end do
       end do
 
@@ -1586,7 +1655,6 @@ contains
 
       !----- ICB:
       if ( l_cond_ic ) then  ! matching condition at inner core:
-
          do n_r_out=1,rscheme_oc%n_max
             jMat(n_r_max,n_r_out)  =rscheme_oc%rnorm*rscheme_oc%rMat(n_r_max,n_r_out)
             jMat(n_r_max+1,n_r_out)=rscheme_oc%rnorm*sigma_ratio* &
@@ -1596,16 +1664,13 @@ contains
             jMat(n_r_max,n_r_out)  =0.0_cp
             jMat(n_r_max+1,n_r_out)=0.0_cp
          end do
-
       else
-
          do n_r_out=1,rscheme_oc%n_max
             jMat(n_r_max,n_r_out)=rscheme_oc%rMat(n_r_max,n_r_out)*rscheme_oc%rnorm
          end do
          do n_r_out=rscheme_oc%n_max+1,n_r_max
             jMat(n_r_max,n_r_out)=0.0_cp
          end do
-
       end if
 
       do n_r=1,n_r_max
@@ -1615,22 +1680,25 @@ contains
 
       !----- Inner core:
       if ( l_cond_ic ) then
-
          do n_cheb=1,n_r_ic_max ! counts even IC cheb modes
-            do n_r=2,n_r_ic_max ! counts IC radial grid point
-               jMat(n_r_max+n_r,n_r_max+n_cheb) =               &
-                  cheb_norm_ic*dLh(lm0)*or3(n_r_max)*opm*O_sr * ( &
-                                r_ic(n_r)*d2cheb_ic(n_cheb,n_r) + &
-                            two*D_lP1(lm0)*dcheb_ic(n_cheb,n_r) )
+            do n_r=2,n_r_ic_max-1 ! counts IC radial grid point
+               jMat(n_r_max+n_r,n_r_max+n_cheb) =                 &
+               &        cheb_norm_ic*dL*or2(n_r_max)*opm*O_sr * ( &
+               &        d2cheb_ic(n_cheb,n_r) + two*real(l+1,cp)* &
+               &        O_r_ic(n_r)*dcheb_ic(n_cheb,n_r) )
             end do
+            ! r=0: central point
+            n_r=n_r_ic_max
+            jMat(n_r_max+n_r,n_r_max+n_cheb) = cheb_norm_ic*dL*or2(n_r_max)* &
+            &              opm*O_sr*(one+two*real(l+1,cp))*d2cheb_ic(n_cheb,n_r)
          end do
 
          !-------- boundary conditions:
          do n_cheb=1,n_cheb_ic_max
             jMat(n_r_max,n_r_max+n_cheb)=-cheb_norm_ic*cheb_ic(n_cheb,1)
-            jMat(n_r_max+1,n_r_max+n_cheb)= -cheb_norm_ic * (   &
-                                             dcheb_ic(n_cheb,1) + &
-                      D_lP1(lm0)*or1(n_r_max)*cheb_ic(n_cheb,1) )
+            jMat(n_r_max+1,n_r_max+n_cheb)= -cheb_norm_ic * (      &
+            &                                dcheb_ic(n_cheb,1)  + &
+            &         real(l+1,cp)*or1(n_r_max)*cheb_ic(n_cheb,1) )
          end do
          do n_cheb=n_r_max+n_cheb_ic_max+1,n_r_tot
             jMat(n_r_max,n_cheb)  =0.0_cp
@@ -1638,8 +1706,9 @@ contains
          end do
 
          !-------- normalization for lowest Cheb mode:
-         do n_r=n_r_max+1,n_r_tot
+         do n_r=n_r_max,n_r_tot
             jMat(n_r,n_r_max+1)=half*jMat(n_r,n_r_max+1)
+            jMat(n_r,n_r_tot)  =half*jMat(n_r,n_r_tot)
          end do
 
          !-------- fill matrix up with zeros:
@@ -1676,6 +1745,7 @@ contains
       do n_r_out=1,rscheme_oc%n_max
          aj0(n_r_out)=rhs(n_r_out)
       end do
+
       do n_r_out=rscheme_oc%n_max+1,n_r_max
          aj0(n_r_out)=zero
       end do
@@ -1684,7 +1754,6 @@ contains
       call rscheme_oc%costf1(aj0)
 
       if ( l_cond_ic ) then
-
          !----- copy result for IC:
          do n_cheb=1,n_cheb_ic_max
             aj0_ic(n_cheb)=rhs(n_r_max+n_cheb)
@@ -1696,11 +1765,9 @@ contains
          !----- transform to radial space:
          !  Note: this is assuming that aj0_ic is an even function !
          call chebt_ic%costf1(aj0_ic,work_l_ic)
-
       end if
 
-      deallocate( jMat )
-      deallocate( jPivot )
+      deallocate( jMat, jPivot )
 
    end subroutine j_cond
 !--------------------------------------------------------------------------------
@@ -1714,61 +1781,66 @@ contains
       real(cp), intent(out) :: xi0(:) ! spherically-symmetric part
 
       !-- local variables:
-      integer :: n_r_out,n_r,info
-      real(cp), allocatable :: rhs(:)
-      real(cp), allocatable :: xi0Mat(:,:)
-      integer, allocatable :: xi0Pivot(:)
+      integer :: n_r_out, n_r, info, n_bands
+      real(cp) :: rhs(n_r_max), dat(n_r_max,n_r_max)
+      class(type_realmat), pointer :: xi0Mat
 
-      allocate( rhs(n_r_max) )
-      allocate( xi0Mat(n_r_max,n_r_max) )
-      allocate( xi0Pivot(n_r_max) )
+      if ( l_finite_diff ) then
+         allocate( type_bandmat :: xi0Mat )
+         if ( ktopxi == 1 .and. kbotxi == 1 .and. rscheme_oc%order <= 2 &
+         &    .and. rscheme_oc%order_boundary <= 2 ) then
+            n_bands = rscheme_oc%order+1
+         else
+            n_bands = max(2*rscheme_oc%order_boundary+1,rscheme_oc%order+1)
+         end if
+         call xi0Mat%initialize(n_bands,n_r_max,l_pivot=.true.)
+      else
+         allocate( type_densemat :: xi0Mat )
+         call xi0Mat%initialize(n_r_max,n_r_max,l_pivot=.true.)
+      end if
 
       !-- Set Matrix:
       do n_r_out=1,n_r_max
          do n_r=2,n_r_max-1
-            xi0Mat(n_r,n_r_out)=rscheme_oc%rnorm*osc*(                    &
+            dat(n_r,n_r_out)=rscheme_oc%rnorm*osc*(                       &
             &                            rscheme_oc%d2rMat(n_r,n_r_out) + &
             &  ( two*or1(n_r)+beta(n_r) )*                                &
             &                             rscheme_oc%drMat(n_r,n_r_out)  )
          end do
       end do
 
-
       !-- Set boundary conditions:
-      do n_r_out=1,rscheme_oc%n_max
-         if ( ktopxi == 1 .or. kbotxi == 2 ) then
-            xi0Mat(1,n_r_out)=rscheme_oc%rMat(1,n_r_out)*rscheme_oc%rnorm
-         else
-            xi0Mat(1,n_r_out)=rscheme_oc%drMat(1,n_r_out)*rscheme_oc%rnorm
-         end if
-         if ( kbotxi == 1 ) then
-            xi0Mat(n_r_max,n_r_out)=rscheme_oc%rMat(n_r_max,n_r_out)*  &
-            &                       rscheme_oc%rnorm
-         else
-            xi0Mat(n_r_max,n_r_out)=rscheme_oc%drMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm
-         end if
-      end do
+      if ( ktopxi == 1 .or. kbotxi == 2 ) then
+         dat(1,:)=rscheme_oc%rMat(1,:)*rscheme_oc%rnorm
+      else
+         dat(1,:)=rscheme_oc%drMat(1,:)*rscheme_oc%rnorm
+      end if
+      if ( kbotxi == 1 ) then
+         dat(n_r_max,:)=rscheme_oc%rMat(n_r_max,:)* rscheme_oc%rnorm
+      else
+         dat(n_r_max,:)=rscheme_oc%drMat(n_r_max,:)*rscheme_oc%rnorm
+      end if
 
       !-- Fill with zeros:
       if ( rscheme_oc%n_max < n_r_max ) then
          do n_r_out=rscheme_oc%n_max+1,n_r_max
-            xi0Mat(1,n_r_out)      =0.0_cp
-            xi0Mat(n_r_max,n_r_out)=0.0_cp
+            dat(1,n_r_out)      =0.0_cp
+            dat(n_r_max,n_r_out)=0.0_cp
          end do
       end if
 
       !-- Renormalize:
       do n_r=1,n_r_max
-         xi0Mat(n_r,1)      =rscheme_oc%boundary_fac*xi0Mat(n_r,1)
-         xi0Mat(n_r,n_r_max)=rscheme_oc%boundary_fac*xi0Mat(n_r,n_r_max)
+         dat(n_r,1)      =rscheme_oc%boundary_fac*dat(n_r,1)
+         dat(n_r,n_r_max)=rscheme_oc%boundary_fac*dat(n_r,n_r_max)
       end do
 
+      !-- Array copy
+      call xi0Mat%set_data(dat)
+
       !-- Invert matrix:
-      call prepare_mat(xi0Mat,n_r_max,n_r_max,xi0Pivot,info)
-      if ( info /= 0 ) then
-         call abortRun('! Singular Matrix xi0Mat in init_xi!')
-      end if
+      call xi0Mat%prepare(info)
+      if ( info /= 0 ) call abortRun('! Singular Matrix xi0Mat in init_xi!')
 
       !-- Set source terms in RHS:
       do n_r=2,n_r_max-1
@@ -1783,13 +1855,11 @@ contains
       end if
       rhs(n_r_max)=real(botxi(0,0))
 
-      !-- Solve for s0:
-      call solve_mat(xi0Mat,n_r_max,n_r_max,xi0Pivot,rhs)
+      !-- Solve for xi0:
+      call xi0Mat%solve(rhs)
 
-      !-- Copy result to s0:
-      do n_r=1,n_r_max
-         xi0(n_r)=rhs(n_r)
-      end do
+      !-- Copy result to xi0:
+      xi0(:)=rhs(:)
 
       !-- Set cheb-modes > rscheme_oc%n_max to zero:
       if ( rscheme_oc%n_max < n_r_max ) then
@@ -1801,9 +1871,8 @@ contains
       !-- Transform to radial space:
       call rscheme_oc%costf1(xi0)
 
-      deallocate( rhs )
-      deallocate( xi0Mat )
-      deallocate( xi0Pivot )
+      !-- Deallocate arrays
+      call xi0Mat%finalize()
 
    end subroutine xi_cond
 !--------------------------------------------------------------------------------
@@ -1899,61 +1968,94 @@ contains
 
       end if
 
-
       !-- Set boundary conditions:
-      do n_r_out=1,rscheme_oc%n_max
-         n_r_out_p=n_r_out+n_r_max
-         if ( ktops == 1 .or. kbots == 2 .or. kbots == 4 ) then
-            pt0Mat(1,n_r_out)=otemp1(1)*rscheme_oc%rnorm* &
-            &                 rscheme_oc%rMat(1,n_r_out)
-            pt0Mat(1,n_r_out_p)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
-            &                   alpha0(1)*orho1(1)*rscheme_oc%rMat(1,n_r_out)
-         else if ( ktops == 2) then ! constant entropy flux at outer boundary
-            pt0Mat(1,n_r_out) =rscheme_oc%rnorm*otemp1(1)*(            &
-            &                             rscheme_oc%drMat(1,n_r_out)- &
-            &                dLtemp0(1)*   rscheme_oc%rMat(1,n_r_out) )
-            pt0Mat(1,n_r_out_p)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb*alpha0(1)* &
-            &                 orho1(1)*(            rscheme_oc%drMat(1,n_r_out)+ &
-            &                 (dLalpha0(1)-beta(1))* rscheme_oc%rMat(1,n_r_out) )
-         else if ( ktops == 3) then ! constant temperature at outer boundary
-            pt0Mat(1,n_r_out)  =rscheme_oc%rnorm*rscheme_oc%rMat(1,n_r_out)
-            pt0Mat(1,n_r_out_p) =0.0_cp
-         else if ( ktops == 4) then ! constant temperature flux at outer boundary
-            pt0Mat(1,n_r_out) =rscheme_oc%drMat(1,n_r_out)*rscheme_oc%rnorm
-            pt0Mat(1,n_r_out_p)=0.0_cp
-         end if
-
-         if ( kbots == 1 ) then        ! Constant entropy at inner boundary
-            pt0Mat(n_r_max,n_r_out)=rscheme_oc%rMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm*otemp1(n_r_max)
-            pt0Mat(n_r_max,n_r_out_p)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
-            &                       alpha0(n_r_max)*orho1(n_r_max)*          &
-            &                       rscheme_oc%rMat(n_r_max,n_r_out)
-         else if ( kbots == 2 ) then   ! Constant entropy flux at inner boundary
-            pt0Mat(n_r_max,n_r_out) =rscheme_oc%rnorm*otemp1(n_r_max)*(   &
-            &                          rscheme_oc%drMat(n_r_max,n_r_out)- &
-            &          dLtemp0(n_r_max)*rscheme_oc%rMat(n_r_max,n_r_out) )
-            pt0Mat(n_r_max,n_r_out_p)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
-            &          alpha0(n_r_max)*orho1(n_r_max)*(                      &
-            &                           rscheme_oc%drMat(n_r_max,n_r_out)+   &
-            &         (dLalpha0(n_r_max)-beta(n_r_max))*                     &
-            &                           rscheme_oc%rMat(n_r_max,n_r_out) )
-         else if ( kbots == 3 ) then   ! Constant temperature at inner boundary
-            pt0Mat(n_r_max,n_r_out)=rscheme_oc%rMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm
-            pt0Mat(n_r_max,n_r_out_p)=0.0_cp
-         else if ( kbots == 4 ) then   ! Constant temperature flux at inner boundary
-            pt0Mat(n_r_max,n_r_out)=rscheme_oc%drMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm
-            pt0Mat(n_r_max,n_r_out_p)=0.0_cp
-         end if
-
+      if ( ktops == 1 .or. kbots == 2 .or. kbots == 4 ) then
+         pt0Mat(1,1:n_r_max)=otemp1(1)*rscheme_oc%rnorm* &
+         &                 rscheme_oc%rMat(1,1:n_r_max)
+         pt0Mat(1,n_r_max+1:)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
+         &                   alpha0(1)*orho1(1)*rscheme_oc%rMat(1,1:n_r_max)
+      else if ( ktops == 2) then ! constant entropy flux at outer boundary
          if ( rscheme_oc%version == 'cheb' ) then
-            pt0Mat(2*n_r_max,n_r_out)  =0.0_cp
-            pt0Mat(2*n_r_max,n_r_out_p)=0.0_cp
+            pt0Mat(1,1:n_r_max) =rscheme_oc%rnorm*otemp1(1)*(            &
+            &                             rscheme_oc%drMat(1,1:n_r_max)- &
+            &                dLtemp0(1)*   rscheme_oc%rMat(1,1:n_r_max) )
+            pt0Mat(1,n_r_max+1:)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb*alpha0(1)* &
+            &                orho1(1)*(            rscheme_oc%drMat(1,1:n_r_max)+ &
+            &                 (dLalpha0(1)-beta(1))* rscheme_oc%rMat(1,1:n_r_max) )
+         else
+            pt0Mat(1,1:n_r_max)=-otemp1(1)*dLtemp0(1)*rscheme_oc%rMat(1,1:n_r_max)
+            pt0Mat(1,1:rscheme_oc%order_boundary+1)=                      &
+            &                    pt0Mat(1,1:rscheme_oc%order_boundary+1)+ &
+            &                       otemp1(1)*rscheme_oc%dr_top(1,:)
+            pt0Mat(1,n_r_max+1:)=-ViscHeatFac*ThExpNb*alpha0(1)*         &
+            &          orho1(1)*(dLalpha0(1)-beta(1))*rscheme_oc%rMat(1,1:n_r_max)
+            pt0Mat(1,n_r_max+1:n_r_max+rscheme_oc%order_boundary+1)=       &
+            &    pt0Mat(1,n_r_max+1:n_r_max+rscheme_oc%order_boundary+1) - &
+            &    ViscHeatFac*ThExpNb*alpha0(1)*orho1(1)*rscheme_oc%dr_top(1,:)
          end if
+      else if ( ktops == 3) then ! constant temperature at outer boundary
+         pt0Mat(1,1:n_r_max)  =rscheme_oc%rnorm*rscheme_oc%rMat(1,1:n_r_max)
+         pt0Mat(1,n_r_max+1:) =0.0_cp
+      else if ( ktops == 4) then ! constant temperature flux at outer boundary
+         if ( rscheme_oc%version == 'cheb' ) then
+            pt0Mat(1,1:n_r_max) =rscheme_oc%drMat(1,1:n_r_max)*rscheme_oc%rnorm
+         else
+            pt0Mat(1,1:rscheme_oc%order_boundary+1)=rscheme_oc%dr_top(1,:)
+            pt0Mat(1,rscheme_oc%order_boundary+2:n_r_max)=0.0_cp
+         end if
+         pt0Mat(1,n_r_max+1:)=0.0_cp
+      end if
 
-      end do
+      if ( kbots == 1 ) then        ! Constant entropy at inner boundary
+         pt0Mat(n_r_max,1:n_r_max)=rscheme_oc%rMat(n_r_max,1:n_r_max)* &
+         &                       rscheme_oc%rnorm*otemp1(n_r_max)
+         pt0Mat(n_r_max,n_r_max+1:)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
+         &                        alpha0(n_r_max)*orho1(n_r_max)*          &
+         &                       rscheme_oc%rMat(n_r_max,1:n_r_max)
+      else if ( kbots == 2 ) then   ! Constant entropy flux at inner boundary
+         if ( rscheme_oc%version == 'cheb' ) then
+            pt0Mat(n_r_max,1:n_r_max) =rscheme_oc%rnorm*otemp1(n_r_max)*(   &
+            &                          rscheme_oc%drMat(n_r_max,1:n_r_max)- &
+            &          dLtemp0(n_r_max)*rscheme_oc%rMat(n_r_max,1:n_r_max) )
+            pt0Mat(n_r_max,n_r_max+1:)=-rscheme_oc%rnorm*ViscHeatFac*ThExpNb* &
+            &           alpha0(n_r_max)*orho1(n_r_max)*(                      &
+            &                          rscheme_oc%drMat(n_r_max,1:n_r_max)+   &
+            &          (dLalpha0(n_r_max)-beta(n_r_max))*                     &
+            &                           rscheme_oc%rMat(n_r_max,1:n_r_max) )
+         else
+            pt0Mat(n_r_max,1:n_r_max)=-otemp1(n_r_max)*dLtemp0(n_r_max)* &
+            &                         rscheme_oc%rMat(n_r_max,1:n_r_max)
+            pt0Mat(n_r_max,n_r_max:n_r_max-rscheme_oc%order_boundary:-1)=      &
+            &     pt0Mat(n_r_max,n_r_max:n_r_max-rscheme_oc%order_boundary:-1)+&
+            &     otemp1(n_r_max)*rscheme_oc%dr_bot(1,:)
+            pt0Mat(n_r_max,n_r_max+1:)=-ViscHeatFac*ThExpNb*alpha0(n_r_max)*  &
+            &              orho1(n_r_max)*(dLalpha0(n_r_max)-beta(n_r_max))*  &
+            &              rscheme_oc%rMat(n_r_max,1:n_r_max)
+            pt0Mat(n_r_max,2*n_r_max:2*n_r_max-rscheme_oc%order_boundary:-1)=  &
+            & pt0Mat(n_r_max,2*n_r_max:2*n_r_max-rscheme_oc%order_boundary:-1)-&
+            &      ViscHeatFac*ThExpNb*alpha0(n_r_max)*orho1(n_r_max)*         &
+            &           rscheme_oc%dr_bot(1,:)
+         end if
+      else if ( kbots == 3 ) then   ! Constant temperature at inner boundary
+         pt0Mat(n_r_max,1:n_r_max)=rscheme_oc%rMat(n_r_max,1:n_r_max)* &
+         &                         rscheme_oc%rnorm
+         pt0Mat(n_r_max,n_r_max+1:)=0.0_cp
+      else if ( kbots == 4 ) then   ! Constant temperature flux at inner boundary
+         if ( rscheme_oc%version == 'cheb' ) then
+            pt0Mat(n_r_max,1:n_r_max)=rscheme_oc%drMat(n_r_max,1:n_r_max)* &
+            &                         rscheme_oc%rnorm
+         else
+            pt0Mat(n_r_max,1:n_r_max)=0.0_cp
+            pt0Mat(n_r_max,n_r_max:n_r_max-rscheme_oc%order_boundary:-1)= &
+            &        rscheme_oc%dr_bot(1,:)
+         end if
+         pt0Mat(n_r_max,n_r_max+1:)=0.0_cp
+      end if
+
+      if ( rscheme_oc%version == 'cheb' ) then
+         pt0Mat(2*n_r_max,1:n_r_max) =0.0_cp
+         pt0Mat(2*n_r_max,n_r_max+1:)=0.0_cp
+      end if
 
       ! In case density perturbations feed back on pressure (non-Boussinesq)
       ! Impose that the integral of (rho' r^2) vanishes
@@ -1962,18 +2064,20 @@ contains
 
          work(:)=ViscHeatFac*alpha0(:)*(ThExpNb*alpha0(:)*temp0(:)+&
          &       ogrun(:))*r(:)*r(:)
-         call rscheme_oc%costf1(work)
-         work         =work*rscheme_oc%rnorm
-         work(1)      =rscheme_oc%boundary_fac*work(1)
-         work(n_r_max)=rscheme_oc%boundary_fac*work(n_r_max)
 
          work2(:)=-alpha0(:)*rho0(:)*r(:)*r(:)
          call rscheme_oc%costf1(work2)
-         work2         =work2*rscheme_oc%rnorm
-         work2(1)      =rscheme_oc%boundary_fac*work2(1)
-         work2(n_r_max)=rscheme_oc%boundary_fac*work2(n_r_max)
 
-         if ( rscheme_oc%version == 'cheb' ) then
+         select type(rscheme_oc)
+
+         type is(type_cheb_odd)
+            call rscheme_oc%costf1(work)
+            work(:)      =work(:)*rscheme_oc%rnorm
+            work(1)      =rscheme_oc%boundary_fac*work(1)
+            work(n_r_max)=rscheme_oc%boundary_fac*work(n_r_max)
+            work2(:)     =work2(:)*rscheme_oc%rnorm
+            work2(1)      =rscheme_oc%boundary_fac*work2(1)
+            work2(n_r_max)=rscheme_oc%boundary_fac*work2(n_r_max)
 
             do n_cheb=1,rscheme_oc%n_max
                nCheb_p=n_cheb+n_r_max
@@ -1981,19 +2085,19 @@ contains
                pt0Mat(n_r_max+1,n_cheb) =0.0_cp
                do n_cheb_in=1,rscheme_oc%n_max
                   if (mod(n_cheb+n_cheb_in-2,2)==0) then
-                     pt0Mat(n_r_max+1,nCheb_p)=pt0Mat(n_r_max+1,nCheb_p)+ &
-                     &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+&
+                     pt0Mat(n_r_max+1,nCheb_p)=pt0Mat(n_r_max+1,nCheb_p)+              &
+                     &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+  &
                      &                       one/(one-real(n_cheb_in+n_cheb-2,cp)**2))*&
                      &                       work(n_cheb_in)*half*rscheme_oc%rnorm
-                     pt0Mat(n_r_max+1,n_cheb)=pt0Mat(n_r_max+1,n_cheb)+ &
-                     &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+&
+                     pt0Mat(n_r_max+1,n_cheb)=pt0Mat(n_r_max+1,n_cheb)+                &
+                     &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+  &
                      &                       one/(one-real(n_cheb_in+n_cheb-2,cp)**2))*&
                      &                       work2(n_cheb_in)*half*rscheme_oc%rnorm
                   end if
                end do
             end do
 
-         else
+         type is(type_fd)
 
             !-- In the finite differences case, we restrict the integral boundary
             !-- condition to a trapezoidal rule of integration
@@ -2009,7 +2113,7 @@ contains
             pt0Mat(n_r_max+1,n_r_max)  =half*work2(n_r_max)*( r(n_r_max)-r(n_r_max-1) )
             pt0Mat(n_r_max+1,2*n_r_max)=half* work(n_r_max)*( r(n_r_max)-r(n_r_max-1) )
 
-         end if
+         end select
 
       else
 
@@ -2048,7 +2152,6 @@ contains
          pt0Mat(n_r_p,2*n_r_max)=rscheme_oc%boundary_fac*pt0Mat(n_r_p,2*n_r_max)
       end do
 
-
       ! compute the linesum of each line
       do n_r=1,2*n_r_max
          pt0Mat_fac(n_r)=one/maxval(abs(pt0Mat(n_r,:)))
@@ -2058,12 +2161,9 @@ contains
          pt0Mat(n_r,:) = pt0Mat(n_r,:)*pt0Mat_fac(n_r)
       end do
 
-
-      !-- Invert matrix:
+      !-- Prepare matrix:
       call prepare_mat(pt0Mat,2*n_r_max,2*n_r_max,pt0Pivot,info)
-      if ( info /= 0 ) then
-         call abortRun('! Singular Matrix pt0Mat in pt_cond!')
-      end if
+      if ( info /= 0 ) call abortRun('! Singular Matrix pt0Mat in pt_cond!')
 
       !-- Set source terms in RHS:
       do n_r=1,n_r_max
@@ -2082,16 +2182,14 @@ contains
       !-- Pressure at the top boundary
       rhs(n_r_max+1)=0.0_cp
 
-      rhs(:) = pt0Mat_fac*rhs
+      rhs(:) = pt0Mat_fac(:)*rhs(:)
 
       !-- Solve for t0 and p0
       call solve_mat(pt0Mat,2*n_r_max,2*n_r_max,pt0Pivot,rhs)
 
       !-- Copy result to t0 and p0:
-      do n_r=1,n_r_max
-         t0(n_r)=rhs(n_r)
-         p0(n_r)=rhs(n_r+n_r_max)
-      end do
+      t0(:)=rhs(1:n_r_max)
+      p0(:)=rhs(n_r_max+1:)
 
       !-- Set cheb-modes > rscheme_oc%n_max to zero:
       if ( rscheme_oc%n_max < n_r_max ) then
@@ -2197,60 +2295,56 @@ contains
       end if
 
       !-- Set boundary conditions:
-      do n_r_out=1,rscheme_oc%n_max
-         n_r_out_p=n_r_out+n_r_max
-         if ( ktops == 1 .or. kbots == 2 .or. kbots == 4 ) then
-            ps0Mat(1,n_r_out)  =rscheme_oc%rnorm*rscheme_oc%rMat(1,n_r_out)
-            ps0Mat(1,n_r_out_p)=0.0_cp
-         else if ( ktops == 2) then ! constant entropy flux at CMB
-            ps0Mat(1,n_r_out) =rscheme_oc%drMat(1,n_r_out)*rscheme_oc%rnorm
-            ps0Mat(1,n_r_out_p)=0.0_cp
-         else if ( ktops == 3) then ! constant temperature at CMB
-            ps0Mat(1,n_r_out)  =rscheme_oc%rnorm*temp0(1)*rscheme_oc%rMat(1,n_r_out)
-            ps0Mat(1,n_r_out_p)=rscheme_oc%rnorm*alpha0(1)*temp0(1)*orho1(1)* &
-            &                   ViscHeatFac*ThExpNb*rscheme_oc%rMat(1,n_r_out)
-         else if ( ktops == 4) then ! constant temperature flux at CMB
-            ps0Mat(1,n_r_out)  =rscheme_oc%rnorm*temp0(1)*(                 &
-            &                                  rscheme_oc%drMat(1,n_r_out)+ &
-            &                       dLtemp0(1)*rscheme_oc%rMat(1,n_r_out) )
-            ps0Mat(1,n_r_out_p)=rscheme_oc%rnorm*orho1(1)*alpha0(1)*      &
-            &                temp0(1)*ViscHeatFac*ThExpNb*(               &
-            &                rscheme_oc%drMat(1,n_r_out)+(dLalpha0(1)+    &
-            &                dLtemp0(1)-beta(1))*rscheme_oc%rMat(1,n_r_out) )
-         end if
+      if ( ktops == 1 .or. kbots == 2 .or. kbots == 4 ) then
+         ps0Mat(1,1:n_r_max)  =rscheme_oc%rnorm*rscheme_oc%rMat(1,:)
+         ps0Mat(1,n_r_max+1:)=0.0_cp
+      else if ( ktops == 2) then ! constant entropy flux at CMB
+         ps0Mat(1,1:n_r_max) =rscheme_oc%drMat(1,:)*rscheme_oc%rnorm
+         ps0Mat(1,n_r_max+1:)=0.0_cp
+      else if ( ktops == 3) then ! constant temperature at CMB
+         ps0Mat(1,1:n_r_max) =rscheme_oc%rnorm*temp0(1)*rscheme_oc%rMat(1,:)
+         ps0Mat(1,n_r_max+1:)=rscheme_oc%rnorm*alpha0(1)*temp0(1)*orho1(1)* &
+          &                   ViscHeatFac*ThExpNb*rscheme_oc%rMat(1,:)
+      else if ( ktops == 4) then ! constant temperature flux at CMB
+         ps0Mat(1,1:n_r_max) =rscheme_oc%rnorm*temp0(1)*(              &
+         &                                      rscheme_oc%drMat(1,:)+ &
+         &                            dLtemp0(1)*rscheme_oc%rMat(1,:) )
+         ps0Mat(1,n_r_max+1:)=rscheme_oc%rnorm*orho1(1)*alpha0(1)*      &
+         &                    temp0(1)*ViscHeatFac*ThExpNb*(            &
+         &                       rscheme_oc%drMat(1,:)+(dLalpha0(1)+    &
+         &                     dLtemp0(1)-beta(1))*rscheme_oc%rMat(1,:) )
+      end if
 
-         if ( kbots == 1 ) then        ! Constant entropy at ICB
-            ps0Mat(n_r_max,n_r_out)=rscheme_oc%rMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm
-            ps0Mat(n_r_max,n_r_out_p)=0.0_cp
-         else if ( kbots == 2 ) then   ! Constant entropy flux at ICB
-            ps0Mat(n_r_max,n_r_out)=rscheme_oc%drMat(n_r_max,n_r_out)* &
-            &                       rscheme_oc%rnorm
-            ps0Mat(n_r_max,n_r_out_p)=0.0_cp
-         else if ( kbots == 3 ) then   ! Constant temperature at ICB
-            ps0Mat(n_r_max,n_r_out)=rscheme_oc%rnorm* &
-            &                       rscheme_oc%rMat(n_r_max,n_r_out)*temp0(n_r_max)
-            ps0Mat(n_r_max,n_r_out_p)=rscheme_oc%rnorm*                  &
-            &                         rscheme_oc%rMat(n_r_max,n_r_out)*  &
-            &                           alpha0(n_r_max)*temp0(n_r_max)*  &
-            &                         orho1(n_r_max)*ViscHeatFac*ThExpNb
-         else if ( kbots == 4 ) then   ! Constant temperature flux at ICB
-            ps0Mat(n_r_max,n_r_out)=rscheme_oc%rnorm*temp0(n_r_max)*(     &
-            &                       rscheme_oc%drMat(n_r_max,n_r_out)+    &
-            &      dLtemp0(n_r_max)*rscheme_oc%rMat(n_r_max,n_r_out) )
-            ps0Mat(n_r_max,n_r_out_p)=rscheme_oc%rnorm*orho1(n_r_max)*        &
-            &                         alpha0(n_r_max)*temp0(n_r_max)*         &
-            &                         ViscHeatFac*ThExpNb*(                   &
-            &                         rscheme_oc%drMat(n_r_max,n_r_out)+      &
-            &                        (dLalpha0(n_r_max)+dLtemp0(n_r_max)-     &
-            &               beta(n_r_max))*rscheme_oc%rMat(n_r_max,n_r_out) )
-         end if
+      if ( kbots == 1 ) then        ! Constant entropy at ICB
+         ps0Mat(n_r_max,1:n_r_max)=rscheme_oc%rMat(n_r_max,:)* &
+         &                         rscheme_oc%rnorm
+         ps0Mat(n_r_max,n_r_max+1:)=0.0_cp
+      else if ( kbots == 2 ) then   ! Constant entropy flux at ICB
+         ps0Mat(n_r_max,1:n_r_max)=rscheme_oc%drMat(n_r_max,:)* &
+         &                         rscheme_oc%rnorm
+         ps0Mat(n_r_max,n_r_max+1:)=0.0_cp
+      else if ( kbots == 3 ) then   ! Constant temperature at ICB
+         ps0Mat(n_r_max,1:n_r_max)=rscheme_oc%rnorm* &
+         &                       rscheme_oc%rMat(n_r_max,:)*temp0(n_r_max)
+         ps0Mat(n_r_max,n_r_max+1:)=rscheme_oc%rnorm*                 &
+         &                         rscheme_oc%rMat(n_r_max,:)*        &
+         &                           alpha0(n_r_max)*temp0(n_r_max)*  &
+         &                         orho1(n_r_max)*ViscHeatFac*ThExpNb
+      else if ( kbots == 4 ) then   ! Constant temperature flux at ICB
+         ps0Mat(n_r_max,1:n_r_max)=rscheme_oc%rnorm*temp0(n_r_max)*(    &
+         &                       rscheme_oc%drMat(n_r_max,:)+           &
+         &      dLtemp0(n_r_max)*rscheme_oc%rMat(n_r_max,:) )
+         ps0Mat(n_r_max,n_r_max+1:)=rscheme_oc%rnorm*orho1(n_r_max)*    &
+         &                         alpha0(n_r_max)*temp0(n_r_max)*      &
+         &                         ViscHeatFac*ThExpNb*(                &
+         &                         rscheme_oc%drMat(n_r_max,:)+         &
+         &                        (dLalpha0(n_r_max)+dLtemp0(n_r_max)-  &
+         &               beta(n_r_max))*rscheme_oc%rMat(n_r_max,:) )
+      end if
 
-         if ( rscheme_oc%version == 'cheb' ) then
-            ps0Mat(n_r_max+1,n_r_out)=0.0_cp
-         end if
-
-      end do
+      if ( rscheme_oc%version == 'cheb' ) then
+         ps0Mat(n_r_max+1,1:n_r_max)=0.0_cp
+      end if
 
       ! In case density perturbations feed back on pressure (non-Boussinesq)
       ! Impose that the integral of (rho' r^2) vanishes
@@ -2277,12 +2371,12 @@ contains
                ps0Mat(n_r_max+1,n_cheb)=0.0_cp
                do n_cheb_in=1,rscheme_oc%n_max
                   if (mod(n_cheb+n_cheb_in-2,2)==0) then
-                  ps0Mat(n_r_max+1,nCheb_p)=ps0Mat(n_r_max+1,nCheb_p)+ &
-                  &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+&
+                  ps0Mat(n_r_max+1,nCheb_p)=ps0Mat(n_r_max+1,nCheb_p)+              &
+                  &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+  &
                   &                       one/(one-real(n_cheb_in+n_cheb-2,cp)**2))*&
                   &                       work(n_cheb_in)*half*rscheme_oc%rnorm
-                  ps0Mat(n_r_max+1,n_cheb)=ps0Mat(n_r_max+1,n_cheb)+ &
-                  &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+&
+                  ps0Mat(n_r_max+1,n_cheb)=ps0Mat(n_r_max+1,n_cheb)+                &
+                  &                       (one/(one-real(n_cheb_in-n_cheb,cp)**2)+  &
                   &                       one/(one-real(n_cheb_in+n_cheb-2,cp)**2))*&
                   &                       work2(n_cheb_in)*half*rscheme_oc%rnorm
                   end if
@@ -2376,16 +2470,14 @@ contains
       !-- Pressure at the top boundary
       rhs(n_r_max+1)=0.0_cp
 
-      rhs(:)=ps0Mat_fac*rhs
+      rhs(:)=ps0Mat_fac(:)*rhs(:)
 
       !-- Solve for s0 and p0
       call solve_mat(ps0Mat,2*n_r_max,2*n_r_max,ps0Pivot,rhs)
 
       !-- Copy result to s0 and p0
-      do n_r=1,n_r_max
-         s0(n_r)=rhs(n_r)
-         p0(n_r)=rhs(n_r+n_r_max)
-      end do
+      s0(:)=rhs(1:n_r_max)
+      p0(:)=rhs(n_r_max+1:)
 
       !-- Set cheb-modes > rscheme_oc%n_max to zero:
       if ( rscheme_oc%n_max < n_r_max ) then

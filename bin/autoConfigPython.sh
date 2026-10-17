@@ -17,8 +17,8 @@ endspin() {
 
 # Determines where matplotlib is installed
 hasPythonMplDarwin() {
-  if hash python 2>/dev/null; then
-    local cmd=`python $MAGIC_HOME/bin/testBackend.py 2> /dev/null`
+  if hash python3 2>/dev/null; then
+    local cmd=$(python3 $MAGIC_HOME/bin/testBackend.py 2> /dev/null)
     if [ -n "$cmd" ]; then
       local backendValue=$cmd;
     else
@@ -33,7 +33,7 @@ hasPythonMplDarwin() {
 
 hasPython2Mpl() {
   if hash python2 2>/dev/null; then
-    local cmd=`python2 $MAGIC_HOME/bin/testBackend.py 2> /dev/null`
+    local cmd=$(python2 $MAGIC_HOME/bin/testBackend.py 2> /dev/null)
     if [ -n "$cmd" ]; then
       local backendValue=$cmd;
     else
@@ -47,7 +47,7 @@ hasPython2Mpl() {
 
 hasPython3Mpl() {
   if hash python3 2>/dev/null; then
-    local cmd=`python3 $MAGIC_HOME/bin/testBackend.py 2> /dev/null`
+    local cmd=$(python3 $MAGIC_HOME/bin/testBackend.py 2> /dev/null)
     if [ -n "$cmd" ]; then
       local backendValue=$cmd;
     else
@@ -59,24 +59,24 @@ hasPython3Mpl() {
   echo $backendValue
 }
 
-# Figure out which f2py executable is available on your machine
-hasf2py2 () {
-  if hash f2py2 2>/dev/null; then
-    local f2pyExec="f2py2";
-  elif hash f2py 2>/dev/null; then
+hasf2py () {
+  if hash f2py 2>/dev/null; then
     local f2pyExec="f2py";
-  elif hash f2py2.7 2>/dev/null; then
-    local f2pyExec="f2py2.7";
   else
     local f2pyExec="NotFound";
   fi
   echo $f2pyExec
 }
 
-whichPython () {
-  local cmd=`python -c 'import sys; print(sys.version_info[0])'`
-  local pythonVersion=$cmd;
-  echo $pythonVersion
+hasf2py2 () {
+  if hash f2py2 2>/dev/null; then
+    local f2pyExec="f2py2";
+  elif hash f2py2.7 2>/dev/null; then
+    local f2pyExec="f2py2.7";
+  else
+    local f2pyExec="NotFound";
+  fi
+  echo $f2pyExec
 }
 
 hasf2py3 () {
@@ -86,6 +86,16 @@ hasf2py3 () {
     local f2pyExec="NotFound";
   fi
   echo $f2pyExec
+}
+
+whichPython () {
+  if hash python 2>/dev/null; then
+      local cmd=$(python -c 'import sys; print(sys.version_info[0])')
+  elif hash python3 2>/dev/null; then
+      local cmd=$(python3 -c 'import sys; print(sys.version_info[0])')
+  fi
+  local pythonVersion=$cmd;
+  echo $pythonVersion
 }
 
 # Set sed command depending on OS type
@@ -99,9 +109,12 @@ whichSed () {
   fi
 }
 
-# Awk magics to find out what are the available fortran compilers
+# Awk magics to find out what are the available fortran compilers.
+# Needed for distutils backend with numpy versions < 1.26.x
+# For versions >= 1.26.x, use meson with regular FC and CC environment variables
+
 whichf2pycompiler () {
-  local pattern=`$1 -c --help-fcompiler | awk '/Compilers available/{flag=0}flag;/compilers found/{flag=1}' | awk -F'[=| ]' '{print $4}'`
+  local pattern=$($1 -c --help-fcompiler | awk '/Compilers available/{flag=0}flag;/compilers found/{flag=1}' | awk -F'[=| ]' '{print $4}')
 
   if  [ -z "$pattern" ]; then
     local selectedCompiler="NotFound";
@@ -144,44 +157,58 @@ whichf2pycompiler () {
 buildLibs () {
 
   local pythonVersion=$(whichPython)
+  local f2pyStdExec=$(hasf2py)
   local f2py2Exec=$(hasf2py2)
   local f2py3Exec=$(hasf2py3)
 
-  if [ $f2py2Exec != "NotFound" ]; then
-    if [ $f2py3Exec != "NotFound" ]; then
-      if [ $pythonVersion  == "3" ]; then
-	local f2pyExec=$f2py3Exec
+  if [ $f2pyStdExec != "NotFound" ]; then
+    local f2pyExec=$f2pyStdExec
+  else
+    if [ $f2py2Exec != "NotFound" ]; then
+      if [ $f2py3Exec != "NotFound" ]; then
+        if [ $pythonVersion  == "3" ]; then
+          local f2pyExec=$f2py3Exec
+        else
+          local f2pyExec=$f2py2Exec
+        fi
       else
         local f2pyExec=$f2py2Exec
       fi
     else
-      local f2pyExec=$f2py2Exec
-    fi
-  else
-    if [ $f2py3Exec == "NotFound" ]; then
-      echo "f2py was not found"
-      echo "f2py can't be set in $MAGIC_HOME/python/magic/magic.cfg"
-      local f2pyExec="NotFound"
-    else
-      local f2pyExec=$f2py3Exec
+      if [ $f2py3Exec == "NotFound" ]; then
+        echo "f2py was not found"
+        echo "f2py can't be set in $MAGIC_HOME/python/magic/magic.cfg"
+        local f2pyExec="NotFound"
+      else
+        local f2pyExec=$f2py3Exec
+      fi
     fi
   fi
 
   if [ $f2pyExec != "NotFound" ]; then
     $SED "s/f2pyexec.*/f2pyexec = $f2pyExec/g" $MAGIC_HOME/python/magic/magic.cfg
 
-    local selectedCompiler=$(whichf2pycompiler $f2pyExec)
-    if [ $selectedCompiler == "NotFound" ]; then
-      $SED "s/buildLib.*/buildLib = False/g" $MAGIC_HOME/python/magic/magic.cfg
-    else
+    if [ $pythonVersion == 3 ]; then
+      local minor_version=$(python3 -c 'import sys; print(sys.version_info.minor)')
+    fi
+
+    if [ $pythonVersion == 3 ] && [ $minor_version -ge 12 ]; then
       $SED "s/buildLib.*/buildLib = True/g" $MAGIC_HOME/python/magic/magic.cfg
+      echo "Found Python version >= 3.12, will use compilers from env variables CC and FC"
+    else
+      local selectedCompiler=$(whichf2pycompiler $f2pyExec)
+      if [ $selectedCompiler == "NotFound" ]; then
+        $SED "s/buildLib.*/buildLib = False/g" $MAGIC_HOME/python/magic/magic.cfg
+      else
+        $SED "s/buildLib.*/buildLib = True/g" $MAGIC_HOME/python/magic/magic.cfg
+      fi
     fi
   fi
 }
 
 # Get matplotlib backend
 getBackend () {
-  
+
   local backend2=$(hasPython2Mpl);
   local backend3=$(hasPython3Mpl);
   local backendDarwin=$(hasPythonMplDarwin);
@@ -199,10 +226,12 @@ getBackend () {
     if [ $backend2 != "NotFound" ]; then
       if [ $backend3 != "NotFound" ]; then
         echo "matplotlib is installed for both python2 and python3"
-        echo "python2 is selected"
+        echo "python3 is selected"
+        local backendValue=$backend3
+      else
+        local backendValue=$backend2
       fi
-      local backendValue=$backend2
-    else 
+    else
       if [ $backend3 == "NotFound" ]; then
         echo "matplotlib was not found"
         echo "the backend can't be set in $MAGIC_HOME/python/magic/magic.cfg"
@@ -211,7 +240,7 @@ getBackend () {
         local backendValue=$backend3
       fi
     fi
-  fi 
+  fi
 
 
   if [ $backendValue != "NotFound" ]; then
@@ -222,7 +251,7 @@ getBackend () {
 ifGWDG() {
 
   local host_name=$HOSTNAME
- 
+
   if [[ $host_name == *"gwd"* ]]
   then
       $SED "s/ccompiler.*/ccompiler = intelem/g" $MAGIC_HOME/python/magic/magic.cfg

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 from magic import npfile, scanDir, MagicSetup, hammer2cart, symmetrize, progressbar
+from scipy.interpolate import interp1d
+from scipy import signal
 import os, re
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,6 +9,10 @@ from .spectralTransforms import SpectralTransforms
 from magic.setup import labTex
 import copy
 
+try:
+    from numpy import trapz as trapz
+except:
+    from numpy import trapezoid as trapz
 
 def deriv(x, y, axis=0):
     """
@@ -30,7 +36,7 @@ def deriv(x, y, axis=0):
     return d
 
 def getGauss(alm, blm, ell, m, scale_b, ratio_cmb_surface, rcmb):
-    """
+    r"""
     Get the Gauss coefficients from the real and imaginary parts
     of the poloidal potential
 
@@ -38,11 +44,11 @@ def getGauss(alm, blm, ell, m, scale_b, ratio_cmb_surface, rcmb):
     :type alm: numpy.ndarray
     :param blm: imaginary part of the poloidal potential
     :type blm: numpy.ndarray
-    :param ell: spherical harmonic degree \ell
+    :param ell: spherical harmonic degree :math:`\ell`
     :type ell: numpy.ndarray
     :param scale_b: magnetic field unit (default is 1)
     :type scale_b: float
-    :param ratio_cmb_surface: ratio of surface ratio to CMB radius (default is 1)
+    :param ratio_cmb_surface: ratio of CMB to surface radius (default is 1)
     :type ratio_cmb_surface: float
     :param rcmb: radius of the outer boundary
     :type rcmb: float
@@ -71,7 +77,7 @@ def rearangeLat(field):
 
 
 class MagicCoeffCmb(MagicSetup):
-    """
+    r"""
     This class allows to read the :ref:`B_coeff_cmb.TAG <secCoeffFiles>` files.
     It first read the poloidal potential at the CMB and then transform
     it to the Gauss coefficients :math:`g_{\ell m}` and :math:`h_{\ell m}`
@@ -97,7 +103,7 @@ class MagicCoeffCmb(MagicSetup):
 
         :param tag: if you specify a pattern, it tries to read the corresponding files
         :type tag: str
-        :param ratio_cmb_surface: ratio of surface ratio to CMB radius (default is 1)
+        :param ratio_cmb_surface: ratio of CMB to surface radius (default is 1)
         :type ratio_cmb_surface: float
         :param scale_b: magnetic field unit (default is 1)
         :type scale_b: float
@@ -167,7 +173,7 @@ class MagicCoeffCmb(MagicSetup):
         for k, file in enumerate(files):
             if not quiet: print('Reading {}'.format(file))
             f = npfile(file, endian='B')
-            self.l_max_cmb, self.minc, n_data = f.fort_read('i')
+            self.l_max_cmb, self.minc, n_data = f.fort_read(np.int32)
             self.m_max_cmb = int((self.l_max_cmb/self.minc)*self.minc)
 
             while 1:
@@ -180,9 +186,9 @@ class MagicCoeffCmb(MagicSetup):
                           self.l_max_cmb-self.m_max_cmb+1
 
         # Get indices location
-        self.idx = np.zeros((self.l_max_cmb+1, self.m_max_cmb+1), 'i')
-        self.ell = np.zeros(self.lm_max_cmb, 'i')
-        self.ms = np.zeros(self.lm_max_cmb, 'i')
+        self.idx = np.zeros((self.l_max_cmb+1, self.m_max_cmb+1), np.int32)
+        self.ell = np.zeros(self.lm_max_cmb, np.int32)
+        self.ms = np.zeros(self.lm_max_cmb, np.int32)
         self.idx[0:self.l_max_cmb+2, 0] = np.arange(self.l_max_cmb+1)
         self.ell[0:self.l_max_cmb+2] = np.arange(self.l_max_cmb+2)
         k = self.l_max_cmb+1
@@ -221,8 +227,8 @@ class MagicCoeffCmb(MagicSetup):
         # Time-averaged Gauss coefficient
         if not ave:
             facT = 1./(self.time[-1]-self.time[0])
-            self.glmM = facT * np.trapz(self.glm, self.time, axis=0)
-            self.hlmM = facT * np.trapz(self.hlm, self.time, axis=0)
+            self.glmM = facT * trapz(self.glm, self.time, axis=0)
+            self.hlmM = facT * trapz(self.hlm, self.time, axis=0)
 
             if len(self.time) > 3:
                 self.dglmdt = deriv(self.time, self.glm.T, axis=1)
@@ -254,11 +260,11 @@ class MagicCoeffCmb(MagicSetup):
 
         if not ave:
             # Time-averaged energy
-            self.ElM = facT * np.trapz(self.El, self.time, axis=0)
-            self.EmM = facT * np.trapz(self.Em, self.time, axis=0)
+            self.ElM = facT * trapz(self.El, self.time, axis=0)
+            self.EmM = facT * trapz(self.Em, self.time, axis=0)
 
             # Secular variation
-            self.ESVlM = facT * np.trapz(self.ESVl, self.time, axis=0)
+            self.ESVlM = facT * trapz(self.ESVl, self.time, axis=0)
             if abs(self.ESVlM[1:]).min() > 0.:
                 self.taul = np.sqrt(self.ElM[1:]/self.ESVlM[1:])
             else:
@@ -295,14 +301,14 @@ class MagicCoeffCmb(MagicSetup):
         """
         self.l_max_cmb = lCut
         self.m_max_cmb = int((self.l_max_cmb/self.minc)*self.minc)
-        self.lm_max_cmb = self.m_max_cmb*(self.l_max_cmb+1)/self.minc - \
-                        self.m_max_cmb*(self.m_max_cmb-self.minc)/(2*self.minc) + \
+        self.lm_max_cmb = self.m_max_cmb*(self.l_max_cmb+1)//self.minc - \
+                        self.m_max_cmb*(self.m_max_cmb-self.minc)//(2*self.minc) + \
                         self.l_max_cmb-self.m_max_cmb+1
 
         # Get indices location
-        idx_new = np.zeros((self.l_max_cmb+1, self.m_max_cmb+1), 'i')
-        ell_new = np.zeros(self.lm_max_cmb, 'i')
-        ms_new = np.zeros(self.lm_max_cmb, 'i')
+        idx_new = np.zeros((self.l_max_cmb+1, self.m_max_cmb+1), np.int32)
+        ell_new = np.zeros(self.lm_max_cmb, np.int32)
+        ms_new = np.zeros(self.lm_max_cmb, np.int32)
         idx_new[0:self.l_max_cmb+2, 0] = np.arange(self.l_max_cmb+1)
         ell_new[0:self.l_max_cmb+2] = np.arange(self.l_max_cmb+2)
         k = self.l_max_cmb+1
@@ -514,7 +520,6 @@ class MagicCoeffCmb(MagicSetup):
 
         # Define spectral transform setup
         sh = SpectralTransforms(l_max=self.l_max_cmb, minc=self.minc,
-                                lm_max=self.lm_max_cmb,
                                 n_theta_max=nlat)
 
         # Transform data on grid space
@@ -637,7 +642,7 @@ class MagicCoeffCmb(MagicSetup):
 
 
 class MagicCoeffR(MagicSetup):
-    """
+    r"""
     This class allows to read the :ref:`B_coeff_r#.TAG <secBcoeffrFile>`
     and :ref:`V_coeff_r#.TAG <secVcoeffrFile>` files.
     It reads the poloidal and toroidal potentials and reconstruct the time
@@ -650,8 +655,8 @@ class MagicCoeffR(MagicSetup):
     >>> plot(cr.time, cr.epolLM[:, cr.idx[10, 10]])
     """
 
-    def __init__(self, tag, ratio_cmb_surface=1, scale_b=1, iplot=True,
-                 field='B', r=1, precision=np.float64, lCut=None, quiet=False):
+    def __init__(self, tag, datadir='.', ratio_cmb_surface=1, scale_b=1, iplot=True,
+                 field='V', r=1, precision=np.float64, lCut=None, quiet=False, step=1):
         """
         :param tag: if you specify a pattern, it tries to read the corresponding files
         :type tag: str
@@ -671,9 +676,15 @@ class MagicCoeffR(MagicSetup):
         :type lCut: int
         :param quiet: verbose when toggled to True (default is True)
         :type quiet: bool
+        :param datadir: working directory
+        :type datadir: str
+        :param step: step>1 allows to down sample the data
+        :type step: int
         """
 
-        logFiles = scanDir('log.*')
+        pattern = os.path.join(datadir, 'log.*')
+        logFiles = scanDir(pattern)
+
         if len(logFiles) != 0:
             MagicSetup.__init__(self, quiet=True, nml=logFiles[-1])
         else:
@@ -683,7 +694,10 @@ class MagicCoeffR(MagicSetup):
         self.rcmb = 1./(1.-self.radratio)
         ricb = self.radratio/(1.-self.radratio)
 
-        files = scanDir('{}_coeff_r{}.{}'.format(field,r,tag))
+        pattern = os.path.join(datadir,  '{}_coeff_r{}.{}'.format(field,r,tag))
+        files = scanDir(pattern)
+
+        self.field = field
 
         # Read the B_coeff files (by stacking the different tags)
         data = []
@@ -708,9 +722,9 @@ class MagicCoeffR(MagicSetup):
                         self.l_max_r-self.m_max_r+1
 
         # Get indices location
-        self.idx = np.zeros((self.l_max_r+1, self.m_max_r+1), 'i')
-        self.ell = np.zeros(self.lm_max_r, 'i')
-        self.ms = np.zeros(self.lm_max_r, 'i')
+        self.idx = np.zeros((self.l_max_r+1, self.m_max_r+1), np.int32)
+        self.ell = np.zeros(self.lm_max_r, np.int32)
+        self.ms = np.zeros(self.lm_max_r, np.int32)
         self.idx[0:self.l_max_r+2, 0] = np.arange(self.l_max_r+1)
         self.ell[0:self.l_max_r+2] = np.arange(self.l_max_r+2)
         k = self.l_max_r+1
@@ -726,7 +740,7 @@ class MagicCoeffR(MagicSetup):
         data = np.array(data, dtype=precision)
         self.nstep = data.shape[0]
         self.wlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        if field == 'V' or field == 'B':
+        if self.field == 'V' or self.field == 'B':
             self.dwlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
             self.zlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
 
@@ -735,17 +749,22 @@ class MagicCoeffR(MagicSetup):
         self.time = data[:, 0]
 
         # wlm
-        if field == 'T' or field == 'Xi': #T or Xi contains l = m = 0
+        if self.field == 'T' or self.field == 'Xi': #T or Xi contains l = m = 0
             self.wlm[:, 0:self.l_max_r+1] = data[:, 1:self.l_max_r+2]
+            k = self.l_max_r+2
         else:
             self.wlm[:, 1:self.l_max_r+1] = data[:, 1:self.l_max_r+1]
-        k = self.l_max_r+1
+            k = self.l_max_r+1
+
         for m in range(self.minc, self.l_max_r+1, self.minc):
             for l in range(m, self.l_max_r+1):
                 self.wlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
                 k += 2
 
-        if field == 'V' or field == 'B':
+        if step > 1:
+            self.wlm = self.wlm[::step, :]
+
+        if self.field == 'V' or self.field == 'B':
             # dwlm
             self.dwlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
             k += self.l_max_r
@@ -761,8 +780,12 @@ class MagicCoeffR(MagicSetup):
                     self.zlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
                     k += 2
 
+            if step > 1:
+                self.dwlm = self.dwlm[::step, :]
+                self.zlm = self.dwlm[::step, :]
+
         # ddw in case B is stored
-        if field == 'B':
+        if self.field == 'B':
             self.ddwlm = np.zeros((self.nstep, self.lm_max_r), np.complex128)
             self.ddwlm[:, 1:self.l_max_r+1] = data[:, k:k+self.l_max_r]
             k += self.l_max_r
@@ -771,12 +794,19 @@ class MagicCoeffR(MagicSetup):
                     self.ddwlm[:, self.idx[l, m]] = data[:, k]+1j*data[:, k+1]
                     k += 2
 
+            if step > 1:
+                self.ddwlm = self.ddwlm[::step, :]
+
         # Truncate!
         if lCut is not None:
             if lCut < self.l_max_r:
-                self.truncate(lCut, field=field)
+                self.truncate(lCut)
 
-        if field == 'V' or field == 'B':
+        if step > 1:
+            self.time = self.time[::step]
+            self.nstep = len(self.time)
+
+        if self.field == 'V' or self.field == 'B':
             self.e_pol_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
             self.e_tor_axi_l = np.zeros((self.nstep, self.l_max_r+1), precision)
             self.e_pol_l = np.zeros((self.nstep, self.l_max_r+1), precision)
@@ -811,17 +841,15 @@ class MagicCoeffR(MagicSetup):
             # Time-averaged energy
             facT = 1./(self.time[-1]-self.time[0])
 
-            self.e_pol_lM = facT * np.trapz(self.e_pol_l, self.time, axis=0)
-            self.e_tor_lM = facT * np.trapz(self.e_tor_l, self.time, axis=0)
-            self.e_pol_axi_lM = facT * np.trapz(self.e_pol_axi_l, self.time, axis=0)
-            self.e_tor_axi_lM = facT * np.trapz(self.e_tor_axi_l, self.time, axis=0)
+            self.e_pol_lM = facT * trapz(self.e_pol_l, self.time, axis=0)
+            self.e_tor_lM = facT * trapz(self.e_tor_l, self.time, axis=0)
+            self.e_pol_axi_lM = facT * trapz(self.e_pol_axi_l, self.time, axis=0)
+            self.e_tor_axi_lM = facT * trapz(self.e_tor_axi_l, self.time, axis=0)
 
-    def truncate(self, lCut, field='B'):
+    def truncate(self, lCut):
         """
         :param lCut: truncate to spherical harmonic degree lCut
         :type lCut: int
-        :param field: name of the field ('V', 'B' or 'T')
-        :type field: char
         """
         self.l_max_r = lCut
         self.m_max_r = int((self.l_max_r/self.minc)*self.minc)
@@ -831,9 +859,9 @@ class MagicCoeffR(MagicSetup):
                         self.l_max_r-self.m_max_r+1)
 
         # Get indices location
-        idx_new = np.zeros((self.l_max_r+1, self.m_max_r+1), 'i')
-        ell_new = np.zeros(self.lm_max_r, 'i')
-        ms_new = np.zeros(self.lm_max_r, 'i')
+        idx_new = np.zeros((self.l_max_r+1, self.m_max_r+1), np.int32)
+        ell_new = np.zeros(self.lm_max_r, np.int32)
+        ms_new = np.zeros(self.lm_max_r, np.int32)
         idx_new[0:self.l_max_r+2, 0] = np.arange(self.l_max_r+1)
         ell_new[0:self.l_max_r+2] = np.arange(self.l_max_r+2)
         k = self.l_max_r+1
@@ -845,10 +873,10 @@ class MagicCoeffR(MagicSetup):
                 k +=1
 
         wlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-        if field == 'V' or field == 'B':
+        if self.field == 'V' or self.field == 'B':
             dwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
             zlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
-            if field == 'B':
+            if self.field == 'B':
                 ddwlm_new = np.zeros((self.nstep, self.lm_max_r), np.complex128)
 
             for l in range(1, self.l_max_r+1):
@@ -857,7 +885,7 @@ class MagicCoeffR(MagicSetup):
                     wlm_new[:, lm] = self.wlm[:, self.idx[l,m]]
                     zlm_new[:, lm] = self.zlm[:, self.idx[l,m]]
                     dwlm_new[:, lm] = self.dwlm[:, self.idx[l,m]]
-                    if field == 'B':
+                    if self.field == 'B':
                         ddwlm_new[:, lm] = self.ddwlm[:, self.idx[l,m]]
         else:
             for l in range(1, self.l_max_r+1):
@@ -870,17 +898,17 @@ class MagicCoeffR(MagicSetup):
                 #wlm_new[:, idx_new[l, m]] = self.wlm[:, self.idx[l,m]]
                 #dwlm_new[:, idx_new[l, m]] = self.dwlm[:, self.idx[l,m]]
                 #zlm_new[:, idx_new[l, m]] = self.zlm[:, self.idx[l,m]]
-                #if field == 'B':
+                #if self.field == 'B':
                     #ddwlm_new[:, idx_new[l, m]] = self.ddwlm[:, self.idx[l,m]]
         self.idx = idx_new
         self.ell = ell_new
         self.ms = ms_new
 
         self.wlm = wlm_new
-        if field == 'V' or field == 'B':
+        if self.field == 'V' or self.field == 'B':
             self.dwlm = dwlm_new
             self.zlm = zlm_new
-            if field == 'B':
+            if self.field == 'B':
                 self.ddwlm = ddwlm_new
 
     def movieRad(self, cut=0.5, levels=12, cm='RdYlBu_r', png=False, step=1,
@@ -888,8 +916,6 @@ class MagicCoeffR(MagicSetup):
                  precision=np.float64, contour=False, mer=False):
         """
         Plotting function (it can also write the png files)
-
-        .. warning:: the python bindings of `SHTns <https://bitbucket.org/bputigny/shtns-magic>`_ are mandatory to use this plotting function!
 
         :param levels: number of contour levels
         :type levels: int
@@ -928,7 +954,7 @@ class MagicCoeffR(MagicSetup):
             dataCut = self.wlm
 
         nlat = max(int(self.l_max_r*(3./2./2.)*2.),192)
-        nphi = 2*nlat/self.minc
+        nphi = 2*nlat//self.minc
 
         # Define spectral transform setup
         sh = SpectralTransforms(l_max=self.l_max_r, minc=self.minc,
@@ -1066,28 +1092,239 @@ class MagicCoeffR(MagicSetup):
                     else:
                         fig.savefig(filename, dpi=dpi)
 
-    def fft(self):
+    def psd(self, pcolor=False, cm='turbo', windowing=False, padding=False,
+            vmin=None, vmax=None, levels=129, one_sided=True):
         """
-        Fourier transform of the poloidal energy
+        This method handles the fourier transform of the poloidal potential
+        (or temperature or chemical composition) and then compute the power
+        spectral distribution.
+
+        :param pcolor: this is a switch to use pcolormesh instead of contourf
+        :type pcolor: bool
+        :param cm: the name of the colormap (default is 'turbo')
+        :type cm: char
+        :param windowing: a switch to multiply the data by a Hanning window
+        :type windowing: bool
+        :param padding: a switch to pad the data with trailing zeros
+        :type padding: bool
+        :param vmax: the maximum value considered in the colorbar
+        :type vmax: float
+        :param vmin: the minimum value considered in the colorbar
+        :type vmin: float
+        :param levels: the number of contour levels
+        :type levels: int
+        :param one_sided: a switch to decide whether one wants, the one-sided
+                          power spectral density (i.e. H(f)=P(f)+P(-f) with
+                          f>0), or the full range of frequencies
+        :type one_sided: bool
         """
-        w2 = np.fft.fft(self.e_pol_l, axis=0)
-        w2 = abs(w2[1:self.nstep/2+1,1:])
-        dw = 2.*np.pi/(self.time[-1]-self.time[0])
-        omega = dw*np.arange(self.nstep)
-        omega = omega[1:self.nstep/2+1]
+
+        dt = np.diff(self.time)
+        # If the data is not regularly sampled, use splines to resample them
+        if dt.min() != dt.max():
+            print('Time interpolation to resample the data')
+            time = np.linspace(self.time[0], self.time[-1], self.nstep)
+            it = interp1d(self.time, self.wlm, axis=0)
+            wlm = it(time)
+            if self.field == 'V' or self.field == 'B':
+                it = interp1d(self.time, self.dwlm, axis=0)
+                dwlm = it(time)
+        else:
+            time = self.time
+            wlm = self.wlm
+            if self.field == 'V' or self.field == 'B':
+                dwlm = self.dwlm
+
+        if windowing:
+            tmp = wlm.T * np.hanning(len(time))
+            wlm = tmp.T
+            if self.field == 'V' or self.field == 'B':
+                tmp = dwlm.T * np.hanning(len(time))
+                dwlm = tmp.T
+
+        if padding:
+            deltat = time[1]-time[0]
+            time_new = time[-1]+deltat*(np.arange(len(time))+1)
+            time = np.hstack((time, time_new))
+            pad = np.zeros((len(time_new), self.lm_max_r), np.complex128)
+            wlm = np.vstack((wlm, pad))
+            if self.field == 'V' or self.field == 'B':
+                dwlm = np.vstack((dwlm, pad))
+
+        wlm_hat = np.fft.fft(wlm, axis=0)/wlm.shape[0]
+        if self.field == 'V' or self.field == 'B':
+            dwlm_hat = np.fft.fft(dwlm, axis=0)/wlm.shape[0]
+
+        if one_sided:
+            if len(time) % 2 == 1: # odd
+                ek = np.zeros((len(time)//2, self.l_max_r+1), np.float64)
+            else:
+                ek = np.zeros((len(time)//2-1, self.l_max_r+1), np.float64)
+        else:
+            ek = np.zeros((len(time), self.l_max_r+1), np.float64)
+        for l in range(1, self.l_max_r+1):
+            ek[:, l] = 0.
+            dLh = l*(l+1.)/self.radius**2
+            for m in range(0, l+1, self.minc):
+                lm = self.idx[l, m]
+
+                if self.field == 'T' or self.field == 'Xi':
+                    if m == 0:
+                        epol = 0.5 * abs(wlm_hat[:, lm])**2
+                    else:
+                        epol = abs(wlm_hat[:, lm])**2
+                else:
+                    if m == 0:
+                        epol = 0.5 * dLh * (dLh * abs(wlm_hat[:, lm])**2 + \
+                                                  abs(dwlm_hat[:, lm])**2)
+                    else:
+                        epol = dLh * (dLh * abs(wlm_hat[:, lm])**2 + \
+                                            abs(dwlm_hat[:, lm])**2)
+
+                if one_sided:
+                    if len(time) % 2 == 1: # odd
+                        ek[:, l] += epol[1:len(time)//2+1]+epol[len(time)//2+1:][::-1]
+                    else:
+                        ek[:, l] += epol[1:len(time)//2]+epol[len(time)//2+1:][::-1]
+
+                else:
+                    ek[:, l] += np.fft.fftshift(epol)
+        ek = ek[:, 1:] # remove l=0
+        self.ek_omega = ek
+        dw = 2.*np.pi/(time[-1]-time[0])
+        omega = np.fft.fftfreq(len(time), d=1./dw/len(time))
+        if one_sided:
+            if len(time) % 2 == 1: # odd
+                self.omega = omega[1:len(time)//2+1]
+            else: #  even
+                self.omega = omega[1:len(time)//2]
+        else:
+            self.omega = np.fft.fftshift(omega)
         ls = np.arange(self.l_max_r+1)
         ls = ls[1:]
 
-        dat = np.log10(w2)
-        vmax = dat.max()-1
-        vmin = dat.min()+2
-        levs = np.linspace(vmin, vmax, 65)
+        dat = np.log10(ek)
+        if vmax is None:
+            vmax = dat.max()-0.5
+        if vmin is None:
+            vmin = max(vmax-10, dat.min()+2)
+        levs = np.linspace(vmin, vmax, levels)
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        im = ax.contourf(ls, omega, np.log10(w2), levs, cmap=plt.get_cmap('jet'),
-                         extend='both')
+        if pcolor:
+            im = ax.pcolormesh(ls, self.omega, dat, cmap=plt.get_cmap(cm),
+                               vmin=vmin, vmax=vmax)
+        else:
+            im = ax.contourf(ls, self.omega, dat, levs, cmap=plt.get_cmap(cm),
+                             extend='both')
 
+        if one_sided:
+            ax.set_yscale('log')
         cbar = fig.colorbar(im)
 
-        ax.set_xlabel(r'Spherical harmonic degree')
-        ax.set_ylabel(r'Frequency')
+        ax.set_xlabel('Spherical harmonic degree')
+        ax.set_ylabel('Frequency')
+
+        fig.tight_layout()
+
+    def cwt(self, ell, w0=20, nfreq=256, fmin_fac=8, fmax_fac=0.5,
+            cm='turbo', logscale=False):
+        r"""
+        Build a time-frequency spectrum at a given degree :math:`\ell` using
+        a continuous wavelet transform with morlet wavelets.
+
+        :param w0: a parameter to normalize the width of the wavelet
+        :type w0: float
+        :param fmin_fac: a factor to adjust the minimum frequency considered
+                         in the time-frequency domain. Minimum frequency is
+                         given by fmin=1/(time[-1]-time[0]), such that
+                         the minimum frequency retained is fmin_fac*fmin
+        :type fmin_fac: float
+        :param fmax_fac: a factor to adjust the maximum frequency retained
+                         in the time-frequency domain. Maximum frequency is
+                         given by fmax=fmax_fac*fcut, where fcut is 1/dt.
+        :type fmax_fac: float
+        :param ell: spherical harmonic degree at which ones want to build
+                    the time frequency diagram. If one gives a negative
+                    number, then the sum over all mode is computed.
+        :type ell: int
+        :param nfreq: number of frequency bins
+        :type nfreq: int
+        :param cm: the name of the colormap (default is 'turbo')
+        :type cm: char
+        :param logscale: when turned to True, this displays the amplitude in
+                         logarithmic scale (linear by default)
+        :type logscale: bool
+        """
+        #assert version > '1.4.0'
+
+        dt = np.diff(self.time)
+        # If the data is not regularly sampled, use splines to resample them
+        if dt.min() != dt.max():
+            time = np.linspace(self.time[0], self.time[-1], self.nstep)
+            it = interp1d(self.time, self.wlm, axis=0)
+            wlm = it(time)
+        else:
+            time = self.time
+            wlm = self.wlm
+
+        dt = time[1]-time[0]
+        fcut = 1./dt # Maximum sampling
+        fmin = 1./(time[-1]-time[0]) # Minimum frequency
+
+        #self.omega = 2.*np.pi*np.linspace(fmin*fmin_fac, fcut/2, 100)
+        self.omega = np.logspace(np.log10(fmin*fmin_fac), np.log10(fmax_fac*fcut), nfreq)
+        self.omega *= 2.*np.pi
+        # Define the widths of the wavelets (related to their frequency)
+        widths = w0*fcut/self.omega
+
+        #widths = np.arange(1, len(self.time)//8)
+        self.ek_time_omega = np.zeros((len(widths), self.nstep), np.float64)
+        if ell < 0:  # Then the sum is computed over all ell's
+            for ll in range(1, self.l_max_r+1):
+                print(ll)
+                for m in range(0, ll+1, self.minc):
+                    lm = self.idx[ll, m]
+                    out = signal.cwt(wlm[:, lm], signal.morlet2, widths, w=w0)
+
+                    if m == 0:
+                        tmp = 0.5*abs(out)**2
+                    else:
+                        tmp = abs(out)**2
+
+                    self.ek_time_omega += tmp
+        else:
+            for m in range(0, ell+1, self.minc):
+                print(m)
+                lm = self.idx[ell, m]
+                out = signal.cwt(wlm[:, lm], signal.morlet2, widths, w=w0)
+
+                if m == 0:
+                    tmp = 0.5*abs(out)**2
+                else:
+                    tmp = abs(out)**2
+
+                self.ek_time_omega += tmp
+
+        if logscale:
+            dat = np.log10(self.ek_time_omega)
+            vmax = dat.max()#-0.5
+            vmin = max(vmax-10, dat.min()+2)
+            levs = np.linspace(vmin, vmax, 64)
+        else:
+            dat = self.ek_time_omega
+            levs = 64
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        im = ax.contourf(time, self.omega, dat, levs, cmap=plt.get_cmap(cm),
+                         extend='both')
+        #im = ax.pcolormesh(time, self.omega, dat, cmap=plt.get_cmap('turbo'),
+        #                   shading='gouraud')
+
+        ax.set_yscale('log')
+        cbar = fig.colorbar(im)
+
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Frequency')
+
+        fig.tight_layout()

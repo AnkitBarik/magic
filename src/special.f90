@@ -3,8 +3,8 @@ module special
    ! This module contains all variables for the case of an imposed IC dipole,
    ! an imposed external magnetic field and a special boundary forcing to excite
    ! inertial modes
+   !
 
-   use truncation, only: n_r_maxMag
    use precision_mod
 
    implicit none
@@ -15,9 +15,6 @@ module special
    !   This is calculated only once and is constant in time.
    logical, public :: lGrenoble
    real(cp), public :: BIC
-   real(cp), public, allocatable :: b0(:)
-   real(cp), public, allocatable :: db0(:)
-   real(cp), public, allocatable :: ddb0(:)
 
    !-- Control parameters for the external magnetic field:
    integer, public :: n_imp       ! Controls external field model
@@ -36,27 +33,23 @@ module special
    !-- Parameters for a toroidal boundary forcing of symmetry (m,m) or (m+1,m)
    !-- to excite inertial modes of desired symmetry
    !-- Can be applied to inner or outer boundary
-   integer, public :: m_RiIc, m_RiMa !Order of forcing 
-   real(cp), public :: amp_RiIc, omega_RiIc  !Amplitude and frequency of forcing at the inner boundary
-   real(cp), public :: amp_RiMa, omega_RiMa  !Amplitude and frequency of forcing at the outer boundary
-   integer, public :: RiSymmMa, RiSymmIc     !Symmetry of forcing: 1 (0) for eq symm (antisymm)
+   integer, public :: m_mode_ic, m_mode_ma          ! Order of forcing
+   real(cp), public :: amp_mode_ic, amp_mode_ma     ! Amplitude of forcing
+   real(cp), public :: omega_mode_ic, omega_mode_ma ! Frequency of forcing
+   integer, public :: mode_symm_ic, mode_symm_ma    ! Symmetry of forcing: 1 : eq symm, 0 : eq antisymm
 
-   public :: initialize_Grenoble, finalize_Grenoble
+   real(cp), public :: ellipticity_cmb    ! Ellipticity of CMB, used for libration
+   real(cp), public :: ellipticity_icb    ! Ellipticity of ICB, used for libration
+   real(cp), public :: ellip_fac_cmb      ! d/d\phi (Y22) * d/dt exp(i\omega t) at CMB
+   real(cp), public :: ellip_fac_icb      ! d/d\phi (Y22) * d/dt exp(i\omega t) at ICB
+   real(cp), public :: amp_tide           ! Amplitude of tide, such that amp_tide = 1 => max ur(2,0) = 1 at boundary
+   real(cp), public :: omega_tide         ! Frequency of tide
+   real(cp), public :: tide_fac20         ! Pre-factor for tidal forcing for (2,0)
+   real(cp), public :: tide_fac22p        ! Pre-factor for tidal forcing for (2,2)
+   real(cp), public :: tide_fac22n        ! Pre-factor for tidal forcing for (2,-2)
+   logical, public  :: l_vr_cmb    ! Radial flow BCs at CMB
+   logical, public  :: l_vr_icb    ! Radial flow BCs at ICB
+   logical, public  :: l_vr_bc    ! Radial flow BCs
+   real(cp), public :: ampForce           ! Amplitude of external body force
 
-contains
-
-   subroutine initialize_Grenoble
-
-      allocate( b0(n_r_maxMag) )
-      allocate( db0(n_r_maxMag) )
-      allocate( ddb0(n_r_maxMag) )
-
-   end subroutine initialize_Grenoble
-!------------------------------------------------------------------------------
-   subroutine finalize_Grenoble
-
-      deallocate( b0, db0, ddb0 )
-
-   end subroutine finalize_Grenoble
-!------------------------------------------------------------------------------
 end module special

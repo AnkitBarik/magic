@@ -1,19 +1,21 @@
-#!/bin/sh
+#!/bin/bash
 
-ver="3.3-r691"
+ver="3.7"
 
 if test ! -d $HOME/local; then
     mkdir $HOME/local
 fi
 
-#if command -v hg; then
-#  hg clone https://bitbucket.org/nschaeff/shtns
-#else
-  wget https://bitbucket.org/nschaeff/shtns/downloads/shtns-$ver.tar.gz
-  tar -xvf shtns-$ver.tar.gz
-  rm shtns-$ver.tar.gz
-  mv shtns-$ver shtns
-#fi
+#wget https://bitbucket.org/nschaeff/shtns/downloads/shtns-$ver.tar.gz
+wget https://gricad-gitlab.univ-grenoble-alpes.fr/schaeffn/shtns/-/archive/v$ver/shtns-v$ver.tar.gz
+tar -xvf shtns-v$ver.tar.gz
+rm shtns-v$ver.tar.gz
+
+if [ -d "shtns-v$ver" ]
+then
+    mv shtns-v$ver shtns
+fi
+
 cd shtns
 
 shtns_version=`grep configure -e "PACKAGE_VERSION=" | sed -e "s/.*=//" -e "s/'//g"`
@@ -42,7 +44,7 @@ else
    fi
 fi
 
-opts="--enable-magic-layout --prefix=$HOME/local --enable-ishioka"
+opts="--prefix=$HOME/local"
 if [[ -n $MKLROOT ]]
 then
    echo "MKL found, installing with MKL"
@@ -53,11 +55,23 @@ fi
 
 # Compile without OpenMP
 ./configure $opts
+
+if [ `echo $CC` ]
+then
+    sed -i "s/shtcc=gcc/shtcc=${CC}/" Makefile
+fi
+
 make -j
 make install -j
 
 # Compile with OpenMP
 ./configure --enable-openmp $opts
+
+if [ `echo $CC` ]
+then
+    sed -i "s/shtcc=gcc/shtcc=${CC}/" Makefile
+fi
+
 make -j
 make install -j
 

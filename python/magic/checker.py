@@ -2,8 +2,12 @@
 from magic import MagicTs, avgField, MagicSpectrum, MagicRadial, scanDir, MagicSetup
 import numpy as np
 from scipy.signal import argrelextrema
-import matplotlib.pyplot as plt
 import os
+
+try:
+    from numpy import trapz as trapz
+except:
+    from numpy import trapezoid as trapz
 
 class bcolors:
     HEADER = '\033[95m'
@@ -22,7 +26,7 @@ def MagicCheck(tstart=None):
     if the power.TAG and some spectra have been produced in the current directory.
     If in addition the tInitAvg file is also there in the directory it averages
     only from this starting time.
-    
+
     >>> MagicCheck(tstart=10.)
     """
 
@@ -40,20 +44,23 @@ def MagicCheck(tstart=None):
     # Not super accurate if n_log_step changed but better that nothing
     n_steps = len(ts.time[mask]) * ts.n_log_step
 
-    dEdt = ts.buoPower+ts.buoPower_chem+ts.ohmDiss+ts.viscDiss
+    dEdt = ts.buoPower + ts.buoPower_chem + ts.ohmDiss + ts.viscDiss\
+           + ts.icrotPower + ts.mantlerotPower
 
     # Power balance:
     buoPower_avg = avgField(ts.time[mask], ts.buoPower[mask])
     buoPower_chem_avg = avgField(ts.time[mask], ts.buoPower_chem[mask])
     ohmDiss_avg = avgField(ts.time[mask], ts.ohmDiss[mask])
     viscDiss_avg = avgField(ts.time[mask], ts.viscDiss[mask])
-    ratio = 100*abs(buoPower_avg+buoPower_chem_avg+ohmDiss_avg+viscDiss_avg) / \
-            (buoPower_avg+buoPower_chem_avg) 
-
+    icrotPower_avg = avgField(ts.time[mask], ts.icrotPower[mask])
+    marotPower_avg = avgField(ts.time[mask], ts.mantlerotPower[mask])
+    ratio = 100*(abs(buoPower_avg+buoPower_chem_avg+icrotPower_avg+marotPower_avg
+                     +ohmDiss_avg+viscDiss_avg) /
+                (buoPower_avg+buoPower_chem_avg+icrotPower_avg+marotPower_avg))
     print(bcolors.BOLD + bcolors.UNDERLINE + 'Power balance:' + bcolors.ENDC)
     print('Power injected   : {:.5e}'.format(buoPower_avg+buoPower_chem_avg))
     print('Power dissipated : {:.5e}'.format(-ohmDiss_avg-viscDiss_avg))
-    st = 'Power mis-balance: {:.3f} %%'.format(ratio)
+    st = 'Power mis-balance: {:.3f} %'.format(ratio)
     if ratio <= 0.5:
         print(bcolors.OKGREEN + st + bcolors.ENDC)
     elif ratio > 0.5 and ratio <= 1.:
@@ -73,10 +80,10 @@ def MagicCheck(tstart=None):
         print(bcolors.MODERATE + 'Sudden variations detected in power balance!' + bcolors.ENDC)
         ones = np.ones_like(ts.time[mask])
         ones[~mask_spike] = 0.
-        ttot_spikes = np.trapz(ones, ts.time[mask])
+        ttot_spikes = trapz(ones, ts.time[mask])
         ttot = ts.time[-1]-ts.time[0]
         ratio = ttot_spikes/ttot
-        print('    -Time fraction with spikes: {:.3f} %%'.format(100.*ratio))
+        print('    -Time fraction with spikes: {:.3f} %'.format(100.*ratio))
         largest = abs(field).max()/absdEdt_avg
         st = '    -Largest event            : {:.2f} <|dE/dt|>'.format(largest)
         if largest > 10:
@@ -96,26 +103,27 @@ def MagicCheck(tstart=None):
         ddt = ddt[ddt_neq_zero]
         print('\nNumber of time step changes   : {}'.format(len(ddt)))
         print('Number of iterations          : {}'.format(n_steps))
-        freq = int( float(n_steps) / float(len(ddt)) )
-        print('Average number of iterations with fixed time step size: {}'.format(freq))
-        time = ts.time[mask][1:][ddt_neq_zero]
-        dt = ts.dt[mask][1:][ddt_neq_zero]
-        dtMean = avgField(time, dt)
-        mask_changes = ( ddt <= 50*dtMean )
-        ones = np.ones_like(time)
-        ones[~mask_changes] = 0.
-        ttot_changes = np.sum(ones*ddt)
-        fast_change_ratio = 100*ttot_changes/(time[-1]-time[0])
-        st = 'Fraction of time with frequent timestep changes (< 50 steps): {:.2f} %%'.format(
-             fast_change_ratio)
-        if fast_change_ratio < 2:
-            print(bcolors.OKGREEN + st + bcolors.ENDC)
-        elif fast_change_ratio >= 2 and fast_change_ratio <= 10:
-            print(bcolors.MODERATE + st + bcolors.ENDC)
-            print(bcolors.MODERATE + 'Maybe increase Courant factors!' + bcolors.ENDC)
-        else:
-            print(bcolors.WARNING + st + bcolors.ENDC)
-            print(bcolors.WARNING + 'Probably increase Courant factors!' + bcolors.ENDC)
+        if len(ddt) != 0:
+            freq = int( float(n_steps) / float(len(ddt)) )
+            print('Average number of iterations with fixed time step size: {}'.format(freq))
+            time = ts.time[mask][1:][ddt_neq_zero]
+            dt = ts.dt[mask][1:][ddt_neq_zero]
+            dtMean = avgField(time, dt)
+            mask_changes = ( ddt <= 50*dtMean )
+            ones = np.ones_like(time)
+            ones[~mask_changes] = 0.
+            ttot_changes = np.sum(ones*ddt)
+            fast_change_ratio = 100*ttot_changes/(time[-1]-time[0])
+            st = 'Fraction of time with frequent timestep changes (< 50 steps): {:.2f} %'.format(
+                 fast_change_ratio)
+            if fast_change_ratio < 2:
+                print(bcolors.OKGREEN + st + bcolors.ENDC)
+            elif fast_change_ratio >= 2 and fast_change_ratio <= 10:
+                print(bcolors.MODERATE + st + bcolors.ENDC)
+                print(bcolors.MODERATE + 'Maybe increase Courant factors!' + bcolors.ENDC)
+            else:
+                print(bcolors.WARNING + st + bcolors.ENDC)
+                print(bcolors.WARNING + 'Probably increase Courant factors!' + bcolors.ENDC)
 
     # Dissipation lengthscales
     ts = MagicTs(field='par', all=True, iplot=False)
@@ -160,6 +168,9 @@ def MagicCheck(tstart=None):
     ekin_l = sp.ekin_poll+sp.ekin_torl
     ratio = ekin_l.max()/ekin_l[-2]
     st = 'Vol. kin. energy spectra (largest/smallest): {:.2e}'.format(ratio)
+    ratio1 = ekin_l[-len(ekin_l)//3:-1].min()/ekin_l[-2]#.max()
+    if ratio1 < 1:
+        st1 = 'Kinetic energy pile up (smallest/last): {:.2e}'.format(ratio1)
     if ts.mode != 1:
         sp = MagicSpectrum(field='mag', iplot=False, ave=ave, quiet=True)
         emag_l = sp.emag_poll+sp.emag_torl
@@ -175,6 +186,12 @@ def MagicCheck(tstart=None):
         print(bcolors.MODERATE + st + bcolors.ENDC)
     else:
         print(bcolors.WARNING + st + bcolors.ENDC)
+
+    if ratio1 < 1 and ratio1 > 0.2:
+        print(bcolors.MODERATE + st1 + bcolors.ENDC)
+    elif ratio1 <= 0.2:
+        print(bcolors.WARNING + st1 + bcolors.ENDC)
+
     if ts.mode != 1:
         if ratio_mag > 100:
             print(bcolors.OKGREEN + st_mag + bcolors.ENDC)

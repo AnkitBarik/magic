@@ -2,8 +2,17 @@
 import scipy.interpolate as S
 import numpy as np
 import glob, os, re, sys
+import subprocess as sp
 from .npfile import *
+try:
+    from scipy.integrate import simps
+except:
+    from scipy.integrate import simpson as simps
 
+try:
+    from numpy import trapz as trapz
+except:
+    from numpy import trapezoid as trapz
 
 def selectField(obj, field, labTex=True, ic=False):
     """
@@ -63,6 +72,13 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = 'xi'
         data_ic = None
+    elif field in ('phase', 'Phase'):
+        data = obj.phase
+        if labTex:
+            label = r'$\Phi$'
+        else:
+            label = 'phi'
+        data_ic = None
     elif field in ('Vr', 'vr', 'Ur', 'ur'):
         data = obj.vr
         if labTex:
@@ -89,7 +105,11 @@ def selectField(obj, field, labTex=True, ic=False):
         data = obj.entropy
         label = 'Entropy'
         data_ic = None
-    elif field in ('u2'):
+    elif field in ('temperature', 't', 'T', 'temp'):
+        data = obj.entropy
+        label = 'Temperature'
+        data_ic = None
+    elif field == 'u2':
         data = obj.vphi**2+obj.vr**2+obj.vtheta**2
         if labTex:
             label = r'$u^2$'
@@ -104,7 +124,7 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = 'Ekin'
         data_ic = None
-    elif field in ('b2', 'B2'):
+    elif field in ('b2', 'B2', 'Emag', 'em', 'Em', 'emag'):
         data = obj.Bphi**2+obj.Br**2+obj.Btheta**2
         if labTex:
             label = r'$B^2$'
@@ -135,7 +155,7 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = 'vp conv'
         data_ic = None
-    elif field in ('bpfluct'):
+    elif field == 'bpfluct':
         data = obj.Bphi-obj.Bphi.mean(axis=0)
         if labTex:
             label = r"$B_{\phi}'$"
@@ -145,7 +165,7 @@ def selectField(obj, field, labTex=True, ic=False):
             data_ic = obj.Bphi_ic-obj.Bphi_ic.mean(axis=0)
         else:
             data_ic = None
-    elif field in ('brfluct'):
+    elif field == 'brfluct':
         data = obj.Br-obj.Br.mean(axis=0)
         if labTex:
             label = r"$B_r'$"
@@ -155,28 +175,35 @@ def selectField(obj, field, labTex=True, ic=False):
             data_ic = obj.Br_ic-obj.Br_ic.mean(axis=0)
         else:
             data_ic = None
-    elif field in ('entropyfluct'):
+    elif field == 'entropyfluct':
         data = obj.entropy-obj.entropy.mean(axis=0)
         if labTex:
             label = r"$s'$"
         else:
             label = "s'"
         data_ic = None
-    elif field in ('xifluct'):
+    elif field in ('tfluct', 'Tfluct'):
+        data = obj.entropy-obj.entropy.mean(axis=0)
+        if labTex:
+            label = r"$T'$"
+        else:
+            label = "T'"
+        data_ic = None
+    elif field == 'xifluct':
         data = obj.xi-obj.xi.mean(axis=0)
         if labTex:
             label = r"$\xi'$"
         else:
             label = "xi'"
         data_ic = None
-    elif field in ('prefluct'):
+    elif field == 'prefluct':
         data = obj.pre-obj.pre.mean(axis=0)
         if labTex:
             label = r"$p'$"
         else:
             label = "p'"
         data_ic = None
-    elif field in ('vrea'):
+    elif field == 'vrea':
         data = np.zeros_like(obj.vr)
         for i in range(obj.ntheta):
             data[:, i, :] = (obj.vr[:, i, :]-obj.vr[:, -i-1, :])/2.
@@ -185,7 +212,7 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = 'vr ea'
         data_ic = None
-    elif field in ('vra'):
+    elif field == 'vra':
         data = np.zeros_like(obj.vr)
         for i in range(obj.ntheta):
             data[:, i, :] = (obj.vr[:, i, :]+obj.vr[:, -i-1, :])/2.
@@ -194,7 +221,7 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = 'vr es'
         data_ic = None
-    elif field in ('vpea'):
+    elif field == 'vpea':
         data = np.zeros_like(obj.vr)
         for i in range(obj.ntheta):
             data[:, i, :] = (obj.vphi[:, i, :]-obj.vphi[:, -i-1, :])/2.
@@ -203,7 +230,7 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = r'vp ea'
         data_ic = None
-    elif field in ('vpa'):
+    elif field == 'vpa':
         data = np.zeros_like(obj.vr)
         for i in range(obj.ntheta):
             data[:, i, :] = (obj.vphi[:, i, :]+obj.vphi[:, -i-1, :])/2.
@@ -212,19 +239,20 @@ def selectField(obj, field, labTex=True, ic=False):
         else:
             label = r'vp es'
         data_ic = None
-    elif field in ('tea'):
+    elif field == 'tea':
         data = np.zeros_like(obj.vr)
         for i in range(obj.ntheta):
             data[:, i, :] = (obj.entropy[:, i, :]-obj.entropy[:, -i-1, :])/2.
         if labTex:
-            label = r'$s$ ea'
+            label = r'$T$ ea'
         else:
-            label = r's ea'
+            label = r'T ea'
         data_ic = None
 
     return data, data_ic, label
 
-def avgField(time, field, tstart=None, std=False):
+def avgField(time, field, tstart=None, std=False, fix_missing_series=False,
+             tstop=None):
     """
     This subroutine computes the time-average (and the std) of a time series
 
@@ -238,21 +266,63 @@ def avgField(time, field, tstart=None, std=False):
     :type field: numpy.ndarray
     :param tstart: the starting time of the averaging
     :type tstart: float
+    :param tstart: the stopping time of the averaging
+    :type tstart: float
     :param std: when set to True, the standard deviation is also calculated
     :type std: bool
+    :param fix_missing_series: when set to True, data equal to zero are ignored,
+                               this is done in case new columns have been added
+                               to the time series
+    :type fix_missing_series: bool
     :returns: the time-averaged quantity
     :rtype: float
     """
     if tstart is not None:
         mask = np.where(abs(time-tstart) == min(abs(time-tstart)), 1, 0)
-        ind = np.nonzero(mask)[0][0]
+        ind1 = np.nonzero(mask)[0][0]
     else: # the whole input array is taken!
-        ind = 0
-    fac = 1./(time[-1]-time[ind])
-    avgField = fac*np.trapz(field[ind:], time[ind:])
+        ind1 = 0
+
+    if tstop is not None:
+        mask = np.where(abs(time-tstop) == min(abs(time-tstop)), 1, 0)
+        ind2 = np.nonzero(mask)[0][0]
+    else: # the whole input array is taken!
+        ind2 = len(time)-1
+
+    # Now suppose data were not stored in the first part of the run
+    # then the time series could look like 0,0,0,...,data,data,data
+    # In that case starting index needs to be overwritten
+    if fix_missing_series and len(field.shape) == 1  and field[ind1] == 0:
+        mask = np.where(field != 0, 1, 0)
+        mask = np.nonzero(mask)[0]
+        if len(mask) > 0:
+            ind_tmp = mask[0]
+            if ind_tmp > ind1:
+                ind1 = ind_tmp
+
+    if time[ind1:ind2+1].shape[0] == 1: # Only one entry in the array
+        if len(field.shape) > 1:
+            avgField = field[ind1, ...]
+            stdField = np.zeros_like(avgField)
+        else:
+            avgField = field[ind1]
+            stdField = 0
+    else:
+        if time[ind1] == time[ind2]: # Same time: this can happen for timestep.TAG
+            if len(field.shape) > 1:
+                avgField = field[-1, ...]
+                stdField = np.zeros_like(avgField)
+            else:
+                avgField = field[-1]
+                stdField = 0
+        else:
+            fac = 1./(time[ind2]-time[ind1])
+            avgField = fac*trapz(field[ind1:ind2+1, ...], time[ind1:ind2+1], axis=0)
+            if std:
+                stdField = np.sqrt(fac*trapz((field[ind1:ind2+1, ...]-avgField)**2,
+                                   time[ind1:ind2+1], axis=0))
 
     if std:
-        stdField = np.sqrt(fac*np.trapz((field[ind:]-avgField)**2, time[ind:]))
         return avgField, stdField
     else:
         return avgField
@@ -278,9 +348,9 @@ def writeVpEq(par, tstart):
     mask = np.where(abs(par.time-tstart) == min(abs(par.time-tstart)), 1, 0)
     ind = np.nonzero(mask)[0][0]
     fac = 1./(par.time.max()-par.time[ind])
-    avgReEq = fac*np.trapz(par.reEquat[ind:], par.time[ind:])
+    avgReEq = fac*trapz(par.reEquat[ind:], par.time[ind:])
     roEq = avgReEq*par.ek*(1.-par.radratio)
-    avgRolC = fac*np.trapz(par.rolc[ind:], par.time[ind:])
+    avgRolC = fac*trapz(par.rolc[ind:], par.time[ind:])
     st = '{:10.3e}{:5.2f}{:6.2f}{:11.3e}{:11.3e}{:11.3e}'.format(par.ek,
         par.strat, par.pr, par.ra, roEq, avgRolC)
 
@@ -498,7 +568,7 @@ def fd_grid(nr, a, b, fd_stretching=0.3, fd_ratio=0.1):
         dr_after = dr_before
         for i in range(1, nr):
             rr[i]=rr[i-1]-dr_before
-    
+
     else:
         n_boundary_points = int( float(nr-1)/(2.*(1+ratio1)) )
         ratio1 = float(nr-1)/float(2.*n_boundary_points) -1.
@@ -511,7 +581,7 @@ def fd_grid(nr, a, b, fd_stretching=0.3, fd_ratio=0.1):
             dr_before = dr_before*dr_after
         dr_before = 1./(float(n_bulk_points)+ \
                     2.*dr_after*((1-dr_before)/(1.-dr_after)))
-    
+
         for i in range(n_boundary_points):
             dr_before = dr_before*dr_after
 
@@ -670,32 +740,41 @@ def den(k, j, nr):
         den = 2.*den
     return den
 
-def timeder(time,y):
+def timeder(time, y):
     """
-    time derivative of an input array
-
-    computed with central differences (numpy.gradient)
+    This routine computes the time derivative of an input array
 
     >>> ts = MagicTs(field='e_kin')
-    >>> dt_ekinpol = timeder(ts,field='ekin_pol')
+    >>> dEkdt = timeder(ts, ts.ekin_pol)
 
+    :param time: an array that contains time
+    :type time: numpy.ndarray
+    :param y: an array which contains the field to be differentiated
+    :type y: numpy.ndarray
+    :returns: an array that contains the time derivative
+    :rtype: numpy.ndarray
     """
     out = np.gradient(y, time, edge_order=1)
 
     return out
 
-def secondtimeder(time,y):
+def secondtimeder(time, y):
     """
-    second time derivative of an input array
-
-    computed with central differences (numpy.gradient)
+    This routine computes the second time derivative of an input array
 
     >>> ts = MagicTs(field='e_kin')
-    >>> dt_ekinpol = secondtimeder(ts,field='ekin_pol')
+    >>> d2Ekdt2 = secondtimeder(ts, ts.ekin_pol)
 
+    :param time: an array that contains time
+    :type time: numpy.ndarray
+    :param y: an array which contains the field to be differentiated two times
+    :type y: numpy.ndarray
+    :returns: an array that contains the second time derivative
+    :rtype: numpy.ndarray
     """
     tmp = np.gradient(y, time, edge_order=1)
     out = np.gradient(tmp, time, edge_order=1)
+
     return out
 
 def phideravg(data, minc=1, order=4):
@@ -734,30 +813,35 @@ def phideravg(data, minc=1, order=4):
         der[-1, ...] = der[0, ...]
     return der
 
-def rderavg(data, eta=0.35, spectral=True, exclude=False):
+def rderavg(data, rad, exclude=False):
     """
     Radial derivative of an input array
 
     >>> gr = MagiGraph()
-    >>> dvrdr = rderavg(gr.vr, eta=gr.radratio)
+    >>> dvrdr = rderavg(gr.vr, gr.radius)
 
     :param data: input array
     :type data: numpy.ndarray
-    :param eta: aspect ratio of the spherical shell
-    :type eta: float
-    :param spectral: when set to True use Chebyshev derivatives, otherwise use
-                     finite differences (default is True)
-    :type spectral: bool
+    :param rad: radial grid
+    :type rad: numpy.ndarray
     :param exclude: when set to True, exclude the first and last radial grid points
                     and replace them by a spline extrapolation (default is False)
     :type exclude: bool
     :returns: the radial derivative of the input array
     :rtype: numpy.ndarray
     """
-    r1 = 1./(1.-eta)
-    r2 = eta/(1.-eta)
+    r1 = rad[0]
+    r2 = rad[-1]
     nr = data.shape[-1]
     grid = chebgrid(nr-1, r1, r2)
+    tol = 1e-6 # This is to determine whether Cheb der will be used
+    diff = abs(grid-rad).max()
+    if diff > tol:
+        spectral = False
+        grid = rad
+    else:
+        spectral = True
+
     if exclude:
         g = grid[::-1]
         gnew = np.linspace(r2, r1, 1000)
@@ -778,7 +862,9 @@ def rderavg(data, eta=0.35, spectral=True, exclude=False):
                     data[j, i, -1] = fnew[0]
     if spectral:
         d1 = matder(nr-1, r1, r2)
-        if len(data.shape) == 2:
+        if len(data.shape) == 1:
+            der = np.dot(d1, data)
+        elif len(data.shape) == 2:
             der = np.tensordot(data, d1, axes=[1, 1])
         else:
             der = np.tensordot(data, d1, axes=[2, 1])
@@ -789,9 +875,10 @@ def rderavg(data, eta=0.35, spectral=True, exclude=False):
         der = (np.roll(data, -1,  axis=-1)-np.roll(data, 1, axis=-1))/denom
         der[..., 0] = (data[..., 1]-data[..., 0])/(grid[1]-grid[0])
         der[..., -1] = (data[..., -1]-data[..., -2])/(grid[-1]-grid[-2])
+
     return der
 
-def thetaderavg(data, order=4):
+def thetaderavg(data, colat=None, order=4):
     """
     Theta-derivative of an input array (finite differences)
 
@@ -800,60 +887,68 @@ def thetaderavg(data, order=4):
 
     :param data: input array
     :type data: numpy.ndarray
+    :param colat: colatitudes (when not specified a regular grid is assumed)
+    :type colat: numpy.ndarray
     :param order: order of the finite-difference scheme (possible values are 2 or 4)
     :type order: int
     :returns: the theta-derivative of the input array
     :rtype: numpy.ndarray
     """
+    if colat is None:
+        if len(data.shape) == 3:
+            ntheta = data.shape[1]
+        elif len(data.shape) == 2:
+            ntheta = data.shape[0]
+        th = np.linspace(0., np.pi, ntheta)
+    else:
+        th = colat
+
     if len(data.shape) == 3: # 3-D
-        ntheta = data.shape[1]
-        dtheta = np.pi/(ntheta-1.)
         if order == 2:
-            der = (np.roll(data, -1,  axis=1)-np.roll(data, 1, axis=1))/(2.*dtheta)
-            der[:, 0, :] = (data[:, 1, :]-data[:, 0, :])/dtheta
-            der[:, -1, :] = (data[:, -1, :]-data[:, -2, :])/dtheta
+            der = (np.roll(data,-1,axis=1)-np.roll(data,1,axis=1)) / \
+                  (np.roll(th[None, :, None],-1)-np.roll(th[None, :, None],1))
+            der[:, 0, :] = (data[:, 1, :]-data[:, 0, :])/(th[1]-th[0])
+            der[:, -1, :] = (data[:, -1, :]-data[:, -2, :])/(th[-1]-th[-2])
         elif order == 4:
-            der = (   -np.roll(data,-2,axis=1) \
-                   +8.*np.roll(data,-1,axis=1) \
-                   -8.*np.roll(data, 1,axis=1)  \
-                      +np.roll(data, 2,axis=1)   )/(12.*dtheta)
-            der[:, 1, :] = (data[:, 2, :]-data[:, 0, :])/(2.*dtheta)
-            der[:, -2, :] = (data[:, -1, :]-data[:, -3, :])/(2.*dtheta)
-            der[:, 0, :] = (data[:, 1, :]-data[:, 0, :])/dtheta
-            der[:, -1, :] = (data[:, -1, :]-data[:, -2, :])/dtheta
+            der = (-np.roll(data,-2,axis=1)+8.*np.roll(data,-1,axis=1) \
+                   -8.*np.roll(data, 1,axis=1)+np.roll(data, 2,axis=1)) / \
+                  (-np.roll(th[None, :, None],-2)+8*np.roll(th[None, :, None],-1) \
+                   -8*np.roll(th[None, :, None],1)+np.roll(th[None, :, None],2))
+            der[:, 1, :] = (data[:, 2, :]-data[:, 0, :])/(th[2]-th[0])
+            der[:, -2, :] = (data[:, -1, :]-data[:, -3, :])/(th[-1]-th[-3])
+            der[:, 0, :] = (data[:, 1, :]-data[:, 0, :])/(th[1]-th[0])
+            der[:, -1, :] = (data[:, -1, :]-data[:, -2, :])/(th[-1]-th[-2])
 
     elif len(data.shape) == 2: #2-D
-        ntheta = data.shape[0]
-        dtheta = np.pi/(ntheta-1.)
         if order == 2:
-            der = (np.roll(data, -1,  axis=0)-np.roll(data, 1, axis=0))/(2.*dtheta)
-            der[0, :] = (data[1, :]-data[0, :])/dtheta
-            der[-1, :] = (data[-1, :]-data[-2, :])/dtheta
+            der = (np.roll(data,-1,axis=0)-np.roll(data,1,axis=0)) / \
+                  (np.roll(th[:, None],-1)-np.roll(th[:, None],1))
+            der[0, :] = (data[1, :]-data[0, :])/(th[1]-th[0])
+            der[-1, :] = (data[-1, :]-data[-2, :])/(th[-1]-th[-2])
         elif order == 4:
             der = (-np.roll(data,-2,axis=0)+8.*np.roll(data,-1,axis=0)-\
-                  8.*np.roll(data,1,axis=0)+np.roll(data,2,axis=0))/(12.*dtheta)
-            der[1, :] = (data[2, :]-data[0, :])/(2.*dtheta)
-            der[-2, :] = (data[-1, :]-data[-3, :])/(2.*dtheta)
-            der[0, :] = (data[1, :]-data[0, :])/dtheta
-            der[-1, :] = (data[-1, :]-data[-2, :])/dtheta
+                  8.*np.roll(data,1,axis=0)+np.roll(data,2,axis=0)) / \
+                  (-np.roll(th[:, None],-2)+8*np.roll(th[:, None],-1)-\
+                   8.*np.roll(th[:, None],1)+np.roll(th[:, None],2))
+            der[1, :] = (data[2, :]-data[0, :])/(th[2]-th[0])
+            der[-2, :] = (data[-1, :]-data[-3, :])/(th[-1]-th[-3])
+            der[0, :] = (data[1, :]-data[0, :])/(th[1]-th[0])
+            der[-1, :] = (data[-1, :]-data[-2, :])/(th[-1]-th[-2])
 
     return der
 
 
-def zderavg(data, eta=0.35, spectral=True, colat=None, exclude=False):
+def zderavg(data, rad, colat=None, exclude=False):
     """
     z derivative of an input array
 
     >>> gr = MagiGraph()
-    >>> dvrdz = zderavg(gr.vr, eta=gr.radratio, colat=gr.colatitude)
+    >>> dvrdz = zderavg(gr.vr, gr.radius, colat=gr.colatitude)
 
     :param data: input array
     :type data: numpy.ndarray
-    :param eta: aspect ratio of the spherical shell
-    :type eta: float
-    :param spectral: when set to True use Chebyshev derivatives, otherwise use
-                     finite differences (default is True)
-    :type spectral: bool
+    :param rad: radial grid
+    :type rad: numpy.ndarray
     :param exclude: when set to True, exclude the first and last radial grid points
                     and replace them by a spline extrapolation (default is False)
     :type exclude: bool
@@ -867,42 +962,33 @@ def zderavg(data, eta=0.35, spectral=True, colat=None, exclude=False):
     elif len(data.shape) == 2:  # 2-D
         ntheta = data.shape[0]
     nr = data.shape[-1]
-    r1 = 1./(1.-eta)
-    r2 = eta/(1.-eta)
     if colat is not None:
         th = colat
     else:
         th = np.linspace(0., np.pi, ntheta)
-    rr = chebgrid(nr-1, r1, r2)
 
     if len(data.shape) == 3:  # 3-D
-        thmD = np.zeros_like(data)
-        for i in range(ntheta):
-            thmD[:,i,:] = th[i]
+        thmD = th[None, :, None]
     elif len(data.shape) == 2:  # 2-D
-        thmD = np.zeros((ntheta, nr), np.float64)
-        for i in range(ntheta):
-            thmD[i, :] = th[i]
+        thmD = th[None, :]
 
-    dtheta = thetaderavg(data)
-    dr = rderavg(data, eta, spectral, exclude)
-    dz = np.cos(thmD)*dr - np.sin(thmD)/rr*dtheta
+    dtheta = thetaderavg(data, colat=colat)
+    dr = rderavg(data, rad, exclude)
+    dz = np.cos(thmD)*dr - np.sin(thmD)/rad*dtheta
+
     return dz
 
-def sderavg(data, eta=0.35, spectral=True, colat=None, exclude=False):
+def sderavg(data, rad, colat=None, exclude=False):
     """
     s derivative of an input array
 
     >>> gr = MagiGraph()
-    >>> dvpds = sderavg(gr.vphi, eta=gr.radratio, colat=gr.colatitude)
+    >>> dvpds = sderavg(gr.vphi, gr.radius, colat=gr.colatitude)
 
     :param data: input array
     :type data: numpy.ndarray
-    :param eta: aspect ratio of the spherical shell
-    :type eta: float
-    :param spectral: when set to True use Chebyshev derivatives, otherwise use
-                     finite differences (default is True)
-    :type spectral: bool
+    :param rad: radial grid
+    :type rad: numpy.ndarray
     :param exclude: when set to True, exclude the first and last radial grid points
                     and replace them by a spline extrapolation (default is False)
     :type exclude: bool
@@ -911,19 +997,25 @@ def sderavg(data, eta=0.35, spectral=True, colat=None, exclude=False):
     :returns: the s derivative of the input array
     :rtype: numpy.ndarray
     """
-    ntheta = data.shape[0]
+    if len(data.shape) == 3:  # 3-D
+        ntheta = data.shape[1]
+    elif len(data.shape) == 2:  # 2-D
+        ntheta = data.shape[0]
     nr = data.shape[-1]
-    r1 = 1./(1.-eta)
-    r2 = eta/(1.-eta)
     if colat is not None:
         th = colat
     else:
         th = np.linspace(0., np.pi, ntheta)
-    rr = chebgrid(nr-1, r1, r2)
-    rr2D, th2D = np.meshgrid(rr,th)
-    dtheta = thetaderavg(data)
-    dr = rderavg(data, eta, spectral, exclude)
-    ds = np.sin(th2D)*dr + np.cos(th2D)/rr2D*dtheta
+
+    if len(data.shape) == 3:  # 3-D
+        thmD = th[None, :, None]
+    elif len(data.shape) == 2:  # 2-D
+        thmD = th[None, :]
+
+    dtheta = thetaderavg(data, colat=colat)
+    dr = rderavg(data, rad, exclude)
+    ds = np.sin(thmD)*dr + np.cos(thmD)/rad*dtheta
+
     return ds
 
 
@@ -945,7 +1037,7 @@ def cylSder(radius, data, order=4):
     :rtype: numpy.ndarray
     """
     ns = data.shape[-1]
-    ds = (radius.max()-radius.min())/(ns-1.)
+    ds = (radius[-1]-radius[0])/(ns-1.)
     if order == 2:
         der = (np.roll(data, -1,  axis=-1)-np.roll(data, 1, axis=-1))/(2.*ds)
         der[..., 0] = (data[..., 1]-data[..., 0])/ds
@@ -978,10 +1070,11 @@ def cylZder(z, data):
     :rtype: numpy.ndarray
     """
     nz = data.shape[1]
-    dz = (z.max()-z.min())/(nz-1.)
+    dz = (z[-1]-z[0])/(nz-1.)
     der = (np.roll(data, -1,  axis=1)-np.roll(data, 1, axis=1))/(2.*dz)
     der[:, 0, :] = (data[:, 1, :]-data[:, 0, :])/dz
     der[:, -1, :] = (data[:, -1, :]-data[:, -2, :])/dz
+
     return der
 
 def getCpuTime(file):
@@ -1098,3 +1191,46 @@ def prime_factors(n):
         factors.append(n)
 
     return factors
+
+def horizontal_mean(field, colat, std=False):
+    """
+    This function computes the horizontal mean (and the standard deviation)
+    of an input array of size (nphi,ntheta) or (nphi,ntheta,nr)
+
+    :param field: the input array
+    :type field: numpy.ndarray
+    :param colat: an array that contains the colatitudes
+    :type colat: numpy.ndarray
+    :param std: a boolean if one also wants to compute the standard deviation
+    :type std: bool
+    :returns: the average value or radial profile
+    :rtype: float
+    """
+
+    field_m = field.mean(axis=0) # Azimuthal average
+    field_mean = 0.5 * simps(field_m*np.sin(colat[:, None]), x=colat[:, None], axis=0)
+
+    if std:
+        dat = (field-field_mean)**2
+        dat_m = dat.mean(axis=0)
+        dat_mean = 0.5 * simps(dat_m*np.sin(colat[:, None]), x=colat[:, None], axis=0)
+        field_std = np.sqrt(dat_mean)
+        return field_mean, field_std
+    else:
+        return field_mean
+
+def cleanBIS(dir='.'):
+    """
+    This function renames all files with a trailing '_BIS' in a given
+    directory.
+
+    :param dir: the working directory
+    :type dir: str
+    """
+
+    files = glob.glob('*_BIS')
+    for file in files:
+        cmd = 'mv {} {}'.format(file, file[:-4])
+        print(cmd)
+        sp.call(cmd, shell=True, stdout=open(os.devnull, 'wb'),
+                stderr=open(os.devnull, 'wb'))

@@ -8,8 +8,11 @@ import matplotlib.pyplot as plt
 import scipy.interpolate as S
 from magic.plotlib import cut
 from magic.setup import labTex
-from scipy.integrate import simps
 from .npfile import *
+try:
+    from scipy.integrate import simps
+except:
+    from scipy.integrate import simpson as simps
 
 
 class Butterfly:
@@ -240,8 +243,8 @@ class Butterfly:
             #ax.text(0.05, 0.9, 'a)', transform =ax.transAxes)
         ax.set_yticks([-90,-45,0,45,90])
         if labTex:
-            ax.set_yticklabels(['$-90^\circ$', '$-45^\circ$', '$0^\circ$',
-                                '$45^\circ$', '$90^\circ$'])
+            ax.set_yticklabels([r'$-90^\circ$', r'$-45^\circ$', r'$0^\circ$',
+                                r'$45^\circ$', r'$90^\circ$'])
         else:
             ax.set_yticklabels(['-90', '-45', '0', '45', '90'])
 
@@ -281,7 +284,7 @@ class Butterfly:
         self.omega = w[1:nt//2+1]
         self.amp1D = np.zeros_like(self.omega)
         for i in range(len(self.omega)):
-            self.amp1D[i] = simps(self.amp[:, i], self.theta)
+            self.amp1D[i] = simps(self.amp[:, i], x=self.theta)
 
         fig = plt.figure()
         ax = fig.add_subplot(211)

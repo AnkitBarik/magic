@@ -5,12 +5,13 @@ import os
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
-from .npfile import *
+from .npfile import npfile
+from .movie import Movie
 from .log import MagicSetup
 from .libmagic import scanDir
 
 
-class TOMovie:
+class TOMovie(Movie):
     """
     This class allows to read and display the :ref:`TO_mov.TAG <secTO_movieFile>`
     generated when :ref:`l_TOmovie=.true. <varl_TOmovie>` is True.
@@ -22,11 +23,17 @@ class TOMovie:
     >>> t = TOMovie(file='TO_mov.N0m2', avg=True, levels=65, cm='seismic')
     """
 
-    def __init__(self, file=None, iplot=True, cm='seismic',
-                 cut=0.5, levels=33, avg=True, precision=np.float32):
+    def __init__(self, file=None, iplot=True, cm='seismic', datadir='.',
+                 cut=0.5, levels=33, avg=True, precision=np.float32,
+                 lastvar=None, nvar='all'):
         """
         :param file: the filename of the TO_mov file
         :type file: str
+        :param nvar: the number of frames of the movie file we want to plot
+                     starting from the last line
+        :type nvar: int
+        :param lastvar: the index of the last timesteps to be read
+        :type lastvar: int
         :param cm: the name of the color map
         :type cm: str
         :param levels: the number of contour levels
@@ -41,6 +48,8 @@ class TOMovie:
         :param precision: precision of the input file, np.float32 for single
                           precision, np.float64 for double precision
         :type precision: str
+        :param datadir: working directory
+        :type datadir: str
         """
 
         if file is None:
@@ -58,47 +67,26 @@ class TOMovie:
         else:
             filename = file
 
-        mot = re.compile(r'TO_mov\.(.*)')
-        end = mot.findall(filename)[0]
+        filename = os.path.join(datadir, filename)
 
-        # DETERMINE THE NUMBER OF LINES BY READING THE LOG FILE
-        logfile = open('log.{}'.format(end), 'r')
-        mot = re.compile(r' ! WRITING TO MOVIE FRAME NO\s*(\d*).*')
-        for line in logfile.readlines():
-            if mot.match(line):
-                nlines = int(mot.findall(line)[0])
-        logfile.close()
+        # Get the version
+        self._get_version(filename)
 
-        self.nvar = nlines
-
-        # READ the movie file
+        # Read the movie file
         infile = npfile(filename, endian='B')
-        # HEADER
-        version = infile.fort_read('|S64')
-        n_type, n_surface, const, n_fields = infile.fort_read(precision)
-        movtype = infile.fort_read(precision)
-        n_fields = int(n_fields)
-        self.movtype = np.asarray(movtype)
-        n_surface = int(n_surface)
 
-        # RUN PARAMETERS
-        runid = infile.fort_read('|S64')
-        n_r_mov_tot, n_r_max, n_theta_max, n_phi_tot, self.minc, self.ra, \
-            self.ek, self.pr, self.prmag, \
-            self.radratio, self.tScale = infile.fort_read(precision)
-        n_r_mov_tot = int(n_r_mov_tot)
-        self.n_r_max = int(n_r_max)
-        self.n_theta_max = int(n_theta_max)
-        self.n_phi_tot = int(n_phi_tot)
+        # Header
+        self._read_header(infile, 0, precision)
+        if self.n_fields == 8:
+            self.l_phase = True
+        else:
+            self.l_phase = False
 
-        # GRID
-        self.radius = infile.fort_read(precision)
-        self.radius = self.radius[:self.n_r_max]  # remove inner core
-        self.theta = infile.fort_read(precision)
-        self.phi = infile.fort_read(precision)
+        # Get the number of lines
+        self._get_nlines(datadir, filename, nvar, lastvar)
 
-        surftype = 'phi_constant'
-        shape = (self.n_r_max, self.n_theta_max)
+        # Shape
+        self._get_data_shape(precision, allocate=False)
 
         self.time = np.zeros(self.nvar, precision)
         self.asVphi = np.zeros((self.nvar, self.n_theta_max, self.n_r_max),
@@ -109,20 +97,45 @@ class TOMovie:
         self.lorentz = np.zeros_like(self.asVphi)
         self.coriolis = np.zeros_like(self.asVphi)
         self.dtVp = np.zeros_like(self.asVphi)
+        if self.l_phase:
+            self.penalty = np.zeros_like(self.asVphi)
 
-        # READ the data
+        # Read the data
+        # If one skip the beginning, nevertheless read but do not store
+        for i in range(self.var2-self.nvar):
+            if self.version == 2:
+                n_frame, t_movieS, omega_ic, omega_ma, movieDipColat, \
+                    movieDipLon, movieDipStrength, movieDipStrengthGeo = \
+                    infile.fort_read(precision)
+            else:
+                t_movieS = infile.fort_read(precision)[0]
+            for ll in range(self.n_fields):
+                dat = infile.fort_read(precision, shape=self.shape, order='F')
         for k in range(self.nvar):
-            n_frame, t_movieS, omega_ic, omega_ma, movieDipColat, \
-                movieDipLon, movieDipStrength, movieDipStrengthGeo \
-                = infile.fort_read(precision)
+            if self.version == 2:
+                n_frame, t_movieS, omega_ic, omega_ma, movieDipColat, \
+                    movieDipLon, movieDipStrength, movieDipStrengthGeo \
+                    = infile.fort_read(precision)
+            else:
+                t_movieS = infile.fort_read(precision)[0]
             self.time[k] = t_movieS
-            self.asVphi[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.rey[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.adv[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.visc[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.lorentz[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.coriolis[k, ...] = infile.fort_read(precision, shape=shape).T
-            self.dtVp[k, ...] = infile.fort_read(precision, shape=shape).T
+            self.asVphi[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                   order='F')
+            self.rey[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                order='F')
+            self.adv[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                order='F')
+            self.visc[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                 order='F')
+            self.lorentz[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                    order='F')
+            self.coriolis[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                     order='F')
+            self.dtVp[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                 order='F')
+            if self.l_phase:
+                self.penalty[k, ...] = infile.fort_read(precision, shape=self.shape,
+                                                        order='F')
 
         if iplot:
             cmap = plt.get_cmap(cm)
@@ -132,8 +145,8 @@ class TOMovie:
         """
         Built-in function to sum two TO movies
 
-        .. note:: So far this function only works for two TO movies with the same
-                  grid sizes. At some point, we might introduce grid
+        .. note:: So far this function only works for two TO movies with the
+                  same grid sizes. At some point, we might introduce grid
                   extrapolation to allow any summation.
         """
 
@@ -141,14 +154,19 @@ class TOMovie:
 
         if new.time[0] == self.time[-1]:
             out.time = np.concatenate((self.time, new.time[1:]), axis=0)
-            out.asVphi = np.concatenate((self.asVphi, new.asVphi[1:, ...]), axis=0)
+            out.asVphi = np.concatenate((self.asVphi, new.asVphi[1:, ...]),
+                                        axis=0)
             out.rey = np.concatenate((self.rey, new.rey[1:, ...]), axis=0)
             out.adv = np.concatenate((self.adv, new.adv[1:, ...]), axis=0)
             out.visc = np.concatenate((self.visc, new.visc[1:, ...]), axis=0)
-            out.lorentz = np.concatenate((self.lorentz, new.lorentz[1:, ...]), axis=0)
+            out.lorentz = np.concatenate((self.lorentz, new.lorentz[1:, ...]),
+                                         axis=0)
             out.coriolis = np.concatenate((self.coriolis, new.coriolis[1:, ...]),
                                           axis=0)
             out.dtVp = np.concatenate((self.dtVp, new.dtVp[1:, ...]), axis=0)
+            if self.l_phase:
+                out.penalty = np.concatenate((self.penalty, new.penalty[1:, ...]),
+                                             axis=0)
         else:
             out.time = np.concatenate((self.time, new.time), axis=0)
             out.asVphi = np.concatenate((self.asVphi, new.asVphi), axis=0)
@@ -156,8 +174,11 @@ class TOMovie:
             out.adv = np.concatenate((self.adv, new.adv), axis=0)
             out.visc = np.concatenate((self.visc, new.visc), axis=0)
             out.lorentz = np.concatenate((self.lorentz, new.lorentz), axis=0)
-            out.coriolis = np.concatenate((self.coriolis, new.coriolis), axis=0)
+            out.coriolis = np.concatenate((self.coriolis, new.coriolis),
+                                          axis=0)
             out.dtVp = np.concatenate((self.dtVp, new.dtVp), axis=0)
+            if self.l_phase:
+                out.penalty = np.concatenate((self.penalty, new.penalty), axis=0)
 
         return out
 
@@ -193,6 +214,8 @@ class TOMovie:
             adv = self.adv.mean(axis=0)
             lor = self.lorentz.mean(axis=0)
             vis = self.visc.mean(axis=0)
+            if self.l_phase:
+                pen = self.penalty.mean(axis=0)
             dt = self.dtVp[:-1].mean(axis=0)
 
             vmin = - max(abs(cor.max()), abs(cor.min()))
@@ -250,6 +273,8 @@ class TOMovie:
             ax = fig.add_subplot(187)
             ax.axis('off')
             balance = adv+cor+vis+lor+rey
+            if self.l_phase:
+                balance += pen
             im = ax.contourf(xx, yy, balance, cs, cmap=cmap, extend='both')
             ax.plot(xxout, yyout, 'k-', lw=1.5)
             ax.plot(xxin, yyin, 'k-', lw=1.5)
@@ -618,6 +643,38 @@ class MagicTOHemi(MagicSetup):
 
         if iplot:
             self.plot()
+
+    def __add__(self, new):
+        """
+        This is an intrinsic '+' method to stack to TO[n|s]hs.TAG files
+
+        .. note:: So far, this only works if the grid resolution does not change
+        """
+        out = copy.deepcopy(new)
+        if new.time[0] == self.time[-1]:
+            out.time = np.concatenate((self.time, new.time[1:]), axis=0)
+            out.vp = np.concatenate((self.vp, new.vp[1:, ...]), axis=0)
+            out.dvp = np.concatenate((self.dvp, new.dvp[1:, ...]), axis=0)
+            out.ddvp = np.concatenate((self.ddvp, new.ddvp[1:, ...]), axis=0)
+            out.tay = np.concatenate((self.tay, new.tay[1:, ...]), axis=0)
+            out.rstr = np.concatenate((self.rstr, new.rstr[1:, ...]), axis=0)
+            out.astr = np.concatenate((self.astr, new.astr[1:, ...]), axis=0)
+            out.viscstr = np.concatenate((self.viscstr, new.viscstr[1:, ...]), axis=0)
+            out.LF = np.concatenate((self.LF, new.LF[1:, ...]), axis=0)
+            out.Bs2 = np.concatenate((self.Bs2, new.Bs2[1:, ...]), axis=0)
+        else:
+            out.time = np.concatenate((self.time, new.time), axis=0)
+            out.vp = np.concatenate((self.vp, new.vp), axis=0)
+            out.dvp = np.concatenate((self.dvp, new.dvp), axis=0)
+            out.ddvp = np.concatenate((self.ddvp, new.ddvp), axis=0)
+            out.tay = np.concatenate((self.tay, new.tay), axis=0)
+            out.rstr = np.concatenate((self.rstr, new.rstr), axis=0)
+            out.astr = np.concatenate((self.astr, new.astr), axis=0)
+            out.viscstr = np.concatenate((self.viscstr, new.viscstr), axis=0)
+            out.LF = np.concatenate((self.LF, new.LF), axis=0)
+            out.Bs2 = np.concatenate((self.Bs2, new.Bs2), axis=0)
+
+        return out
 
     def plot(self):
         """

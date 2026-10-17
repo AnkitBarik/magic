@@ -1,14 +1,17 @@
 module potreader_single
 
+   use iso_c_binding, only: sp => c_float
+
    implicit none
 
-   real(kind=4) :: ra, ek, pr, prmag, radratio, sigma_ratio, omega_ma, omega_ic
-   real(kind=4) :: raxi, sc
-   real(kind=4) :: time
+   real(sp) :: ra, ek, pr, prmag, radratio, sigma_ratio, omega_ma, omega_ic
+   real(sp) :: raxi, sc
+   real(sp) :: time
    integer :: n_r_max, l_max, n_r_ic_max, lm_max, minc, version
-   real(kind=4), allocatable :: radius(:), rho0(:)
-   complex(kind=4), allocatable :: pol(:,:), tor(:,:)
-   complex(kind=4), allocatable :: pol_ic(:,:), tor_ic(:,:)
+   integer :: m_min, m_max
+   real(sp), allocatable :: radius(:), rho0(:)
+   complex(sp), allocatable :: pol(:,:), tor(:,:)
+   complex(sp), allocatable :: pol_ic(:,:), tor_ic(:,:)
 
 contains
 
@@ -52,6 +55,7 @@ contains
          read(10) time
          read(10) ra, pr, raxi, sc, prmag, ek, radratio, sigma_ratio
          read(10) n_r_max, n_r_ic_max, l_max, minc, lm_max
+         if (version == 2) read(10) m_min, m_max
          read(10) omega_ic, omega_ma
 
       end if

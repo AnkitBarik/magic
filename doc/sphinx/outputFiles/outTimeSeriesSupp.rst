@@ -113,17 +113,17 @@ This file contains the power budget diagnostic. This file is computed by the sub
    +===============+==================================================================+
    | 1             | time                                                             |
    +---------------+------------------------------------------------------------------+
-   | 2             | Buoyancy power: :math:`Ra\,g(r)\,\langle u_r T'\rangle_s`        |
+   | 2             | Buoyancy power: :math:`Ra\,g(r)\,\langle u_r T'\rangle_V`        |
    +---------------+------------------------------------------------------------------+
-   | 3             | Chemical power: :math:`Ra_\xi\,g(r)\,\langle u_r \xi'\rangle_s`  |
+   | 3             | Chemical power: :math:`Ra_\xi\,g(r)\,\langle u_r \xi'\rangle_V`  |
    +---------------+------------------------------------------------------------------+
    | 4             | Viscous power at the inner boundary (ICB)                        |
    +---------------+------------------------------------------------------------------+
    | 5             | Viscous power at the outer boundary (CMB)                        |
    +---------------+------------------------------------------------------------------+
-   | 6             | Viscous dissipation: :math:`\langle(\nabla \times u)^2\rangle_s` |
+   | 6             | Viscous dissipation: :math:`\langle(\nabla \times u)^2\rangle_V` |
    +---------------+------------------------------------------------------------------+
-   | 7             | Ohmic dissipation: :math:`\langle(\nabla \times B)^2\rangle_s`   |
+   | 7             | Ohmic dissipation: :math:`\langle(\nabla \times B)^2\rangle_V`   |
    +---------------+------------------------------------------------------------------+
    | 8             | Total power at the CMB (viscous + Lorentz)                       |
    +---------------+------------------------------------------------------------------+
@@ -230,6 +230,14 @@ This file is written by the subroutine :f:subr:`getEgeos <egeos_mod/getegeos()>`
    | 7             | North/South correlation of vorticity outside the TC          |
    +---------------+--------------------------------------------------------------+
    | 8             | North/South correlation of helicity outside the TC           |
+   +---------------+--------------------------------------------------------------+
+   | 9             | Geostrophy of axisymmetic flow                               |
+   +---------------+--------------------------------------------------------------+
+   | 10            | Geostrophy of zonal flow                                     |
+   +---------------+--------------------------------------------------------------+
+   | 11            | Geostrophy of meridional flow                                |
+   +---------------+--------------------------------------------------------------+
+   | 12            | Geostrophy of non-axisymmetric flow                          |
    +---------------+--------------------------------------------------------------+
 
 This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the following options:
@@ -530,7 +538,7 @@ written by the subroutine :f:subr:`dtVrms <out_rms/dtvrms()>`.
    +---------------+--------------------------------------------------------------+
    | No. of column | Contents                                                     |
    +===============+==============================================================+
-   | 1             | time                                                         |
+   | 1             | Time                                                         |
    +---------------+--------------------------------------------------------------+
    | 2             | Total inertia: dU/dt and advection                           |
    +---------------+--------------------------------------------------------------+
@@ -542,23 +550,25 @@ written by the subroutine :f:subr:`dtVrms <out_rms/dtvrms()>`.
    +---------------+--------------------------------------------------------------+
    | 6             | Diffusion term                                               |
    +---------------+--------------------------------------------------------------+
-   | 7             | Buoyancy term                                                |
+   | 7             | Thermal buoyancy term                                        |
    +---------------+--------------------------------------------------------------+
-   | 8             | Pressure gradient term                                       |
+   | 8             | Chemical buoyancy term                                       |
    +---------------+--------------------------------------------------------------+
-   | 9             | Sum of force terms: geostrophic balance                      |
+   | 9             | Pressure gradient term                                       |
    +---------------+--------------------------------------------------------------+
-   | 10            | Sum of force terms: pressure, Coriolis and Lorentz           |
+   | 10            | Sum of force terms: geostrophic balance                      |
    +---------------+--------------------------------------------------------------+
-   | 11            | Sum of force terms: pressure, buoyancy and Coriolis          |
+   | 11            | Sum of force terms: pressure, Coriolis and Lorentz           |
    +---------------+--------------------------------------------------------------+
-   | 12            | Sum of force terms: pressure, buoyancy, Coriolis and Lorentz |
+   | 12            | Sum of force terms: pressure, buoyancy and Coriolis          |
    +---------------+--------------------------------------------------------------+
-   | 13            | Sum of force terms: Lorentz/Coriolis                         |
+   | 13            | Sum of force terms: pressure, buoyancy, Coriolis and Lorentz |
    +---------------+--------------------------------------------------------------+
-   | 14            | Sum of force terms: Pressure/Lorentz                         |
+   | 14            | Sum of force terms: Lorentz/Coriolis                         |
    +---------------+--------------------------------------------------------------+
-   | 15            | Sum of force terms: Coriolis/Inertia/Archimedean             |
+   | 15            | Sum of force terms: Pressure/Lorentz                         |
+   +---------------+--------------------------------------------------------------+
+   | 16            | Sum of force terms: Coriolis/Inertia/Archimedean             |
    +---------------+--------------------------------------------------------------+
 
 This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the following options:
@@ -575,7 +585,7 @@ This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the followi
 .. note:: This file is **only** written when :ref:`l_RMS=.true. <varl_RMS>`
 
 This files contains the RMS terms that enter the induction equation. This file is
-written by the subroutine :f:subr:`dtBrms <out_rms/dtbrms()>`.
+written by the subroutine :f:subr:`dtBrms <rms/dtbrms()>`.
 
    +---------------+-------------------------------------------------------+
    | No. of column | Contents                                              |
@@ -641,3 +651,189 @@ This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the followi
 
    >>> # To stack all the perpPar.TAG files of the current directory
    >>> ts = MagicTs(field='perpPar', all=True)
+
+.. _secphaseFile:
+
+``phase.TAG``
+-------------
+
+This file contains several diagnostic related to phase field whenever this field is used
+by MagIC. This file is calculated by the subroutine
+:f:subr:`outPhase <outmisc_mod/outphase()>`.
+
+   +---------------+-----------------------------------------------------------------+
+   | No. of column | Contents                                                        |
+   +===============+=================================================================+
+   | 1             | time                                                            |
+   +---------------+-----------------------------------------------------------------+
+   | 2             | Average radius of the solidus                                   |
+   +---------------+-----------------------------------------------------------------+
+   | 3             | Average temperature at the solidus (should be close to tmelt)   |
+   +---------------+-----------------------------------------------------------------+
+   | 4             | Mean spherically-symmetric radius of the solidus                |
+   +---------------+-----------------------------------------------------------------+
+   | 5             | Mean spherically-symmetric temperature at the mean spherically  |
+   |               | symmetric radius of the solidus                                 |
+   +---------------+-----------------------------------------------------------------+
+   | 6             | Minimum radius of the solidus                                   |
+   +---------------+-----------------------------------------------------------------+
+   | 7             | Maximum radius of the solidus                                   |
+   +---------------+-----------------------------------------------------------------+
+   | 8             | Volume of the solid phase                                       |
+   +---------------+-----------------------------------------------------------------+
+   | 9             | Kinetic energy of the solid phase (should be small)             |
+   +---------------+-----------------------------------------------------------------+
+   | 10            | Kinetic energy of the liquid phase                              |
+   +---------------+-----------------------------------------------------------------+
+   | 11            | Heat flux at the outer core boundary                            |
+   +---------------+-----------------------------------------------------------------+
+   | 12            | Heat flux at the inner core boundary                            |
+   +---------------+-----------------------------------------------------------------+
+   | 13            | Time variation of of temperature and phase field:               |
+   |               | :math:`\frac{\partial}{\partial t}(T-St\Phi)`                   |
+   +---------------+-----------------------------------------------------------------+
+   | 14            | Maximum value of phase field (should not exceed one by much,    |
+   |               | otherwise, Gibbs phenomenon is likely occurring)                |
+   +---------------+-----------------------------------------------------------------+
+   | 15            | Minimum value of phase field (should be close to zero,          |
+   |               | otherwise, Gibbs phenomenon is likely occurring)                |
+   +---------------+-----------------------------------------------------------------+
+
+   >>> # To stack all the phase.TAG files of the current directory
+   >>> ts = MagicTs(field='phase', all=True)
+
+.. _secHemiFile:
+
+``hemi.TAG``
+-------------
+
+This file contains diagnostics related to North/South hemisphericity in kinetic and
+magnetic energies. This is based on Dietrich and Wicht (2013) work. The file is
+calculated by the subroutine :f:subr:`outHemi <outmisc_mod/outhemi()>`.
+
+   +---------------+-----------------------------------------------------------------+
+   | No. of column | Contents                                                        |
+   +===============+=================================================================+
+   | 1             | time                                                            |
+   +---------------+-----------------------------------------------------------------+
+   | 2             | relative hemisphericity of :math:`|u_r|`                        |
+   +---------------+-----------------------------------------------------------------+
+   | 3             | relative hemisphericity of kinetic energy                       |
+   +---------------+-----------------------------------------------------------------+
+   | 4             | relative hemisphericity of :math:`|B_r|`                        |
+   +---------------+-----------------------------------------------------------------+
+   | 5             | relative hemisphericity of magnetic energy                      |
+   +---------------+-----------------------------------------------------------------+
+   | 6             | relative hemisphericity of :math:`|B_r|` at the CMB             |
+   +---------------+-----------------------------------------------------------------+
+   | 7             | total kinetic energy (to assess method accuracy)                |
+   +---------------+-----------------------------------------------------------------+
+   | 8             | total magnetic energy (to assess method accuracy)               |
+   +---------------+-----------------------------------------------------------------+
+
+   >>> # To stack all the hemi.TAG files of the current directory
+   >>> ts = MagicTs(field='hemi', all=True)
+
+.. _secDoubleDiffFile:
+
+``double_diff.TAG``
+-------------------
+
+This files contains extra informations relevant for simulations of double diffusive
+convection, such as density and flux ratios. This is automatically turned on
+when both chemical and thermal Rayleigh numbers differ from zero.  This computation
+and writing of the output files is handled by the subroutine
+:f:subr:`outDD <outmisc_mod/outdd()>`.
+
+   +---------------+---------------------------------------------------------------+
+   | No. of column | Contents                                                      |
+   +===============+===============================================================+
+   | 1             | time                                                          |
+   +---------------+---------------------------------------------------------------+
+   | 2             | Effective density ratio defined using the actual ratio of     |
+   |               | temperature and composition across the spherical shell.       |
+   +---------------+---------------------------------------------------------------+
+   | 3             | Flux ratio :math:`\gamma=\alpha_T F_T/\alpha_\xi F_\xi`       |
+   +---------------+---------------------------------------------------------------+
+   | 4             | Turbulent flux ratio                                          |
+   |               | :math:`|\langle u_r T\rangle/\langle u_r \xi \rangle|`        |
+   +---------------+---------------------------------------------------------------+
+   | 5             | Conductive heat flux integrated over the entire volume        |
+   +---------------+---------------------------------------------------------------+
+   | 6             | Convective heat flux integrated over the entire volume        |
+   +---------------+---------------------------------------------------------------+
+   | 7             | Conductive composition flux integrated over the entire        |
+   |               | volume                                                        |
+   +---------------+---------------------------------------------------------------+
+   | 8             | Convective composition flux integrated over the entire        |
+   |               | volume                                                        |
+   +---------------+---------------------------------------------------------------+
+   | 9             | Total energy of the temperature fluctuations                  |
+   |               | :math:`\frac{1}{2}\langle {T'}^2 \rangle_V                    |
+   +---------------+---------------------------------------------------------------+
+   | 10            | Axisymmetric part of the temperature fluctuations             |
+   |               | :math:`\frac{1}{2}\langle {T'}_{m=0}^2 \rangle_V              |
+   +---------------+---------------------------------------------------------------+
+   | 11            | Spherically-symmetric part of the temperature fluctuations    |
+   |               | :math:`\frac{1}{2}\langle {T'}_{\ell=0}^2 \rangle_V           |
+   +---------------+---------------------------------------------------------------+
+   | 12            | Degree one contribution of the temperature fluctuations       |
+   |               | :math:`\frac{1}{2}\langle {T'}_{\ell=1}^2 \rangle_V           |
+   +---------------+---------------------------------------------------------------+
+   | 13            | Total energy of the fluctuations of chemical composition      |
+   |               | :math:`\frac{1}{2}\langle {\xi'}^2 \rangle_V                  |
+   +---------------+---------------------------------------------------------------+
+   | 14            | Axisymmetric part of the fluctuations of composition          |
+   |               | :math:`\frac{1}{2}\langle {\xi'}_{m=0}^2 \rangle_V            |
+   +---------------+---------------------------------------------------------------+
+   | 15            | Spherically-symmetric part of the fluctuations of composition |
+   |               | :math:`\frac{1}{2}\langle {\xi'}_{\ell=0}^2 \rangle_V         |
+   +---------------+---------------------------------------------------------------+
+   | 16            | Degree one contribution of the fluctuations of composition    |
+   |               | :math:`\frac{1}{2}\langle {\xi'}_{\ell=1}^2 \rangle_V         |
+   +---------------+---------------------------------------------------------------+
+
+This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the following
+options:
+
+   >>> # To stack all the double_diff.TAG files of the current directory
+   >>> ts = MagicTs(field='double_diff', all=True)
+
+
+``growth_sym.TAG`` and ``growth_asym.TAG``
+------------------------------------------
+
+Those files contain the time series of growth rate of different azimuthal wavenumbers ranging from :f:var:`m_min <m_min>` to :f:var:`m_max <_m_max>`. This file is produced when MagIC is used to compute the onset of convection, i.e. when :f:var:`mode=5 <mode>`. `growth_sym` corresponds to equatorially-symmetric mode, `growth_asym` to equatorially-asymmetric modes. Those files are produced by the routine :f:subr:`get_onset <outmisc_mod/get_onset()>`.
+
+   +---------------+---------------------------------------------------------+
+   | No. of column | Contents                                                |
+   +===============+=========================================================+
+   | 1             | time                                                    |
+   +---------------+---------------------------------------------------------+
+   | 2             | growth rate of the azimuthal wave number `m_min`        |
+   +---------------+---------------------------------------------------------+
+   | 3             | growth rate of the azimuthal wave number `m_min+1`      |
+   +---------------+---------------------------------------------------------+
+   | 4             | growth rate of the azimuthal wave number `m_min+2`      |
+   +---------------+---------------------------------------------------------+
+   | ...           | growth rate of the azimuthal wave number `m_max`        |
+   +---------------+---------------------------------------------------------+
+
+``drift_sym.TAG`` and ``drift_asym.TAG``
+----------------------------------------
+
+Those files contain the time series of drift frequency of different azimuthal wavenumbers ranging from :f:var:`m_min <m_min>` to :f:var:`m_max <_m_max>`. This file is produced when MagIC is used to compute the onset of convection, i.e. when :f:var:`mode=5 <mode>`. `drift_sym` corresponds to equatorially-symmetric modes, `drift_asym` to equatorially-asymmetric modes. Those files are produced by the routine :f:subr:`get_onset <outmisc_mod/get_onset()>`.
+
+   +---------------+-------------------------------------------------------------+
+   | No. of column | Contents                                                    |
+   +===============+=============================================================+
+   | 1             | time                                                        |
+   +---------------+-------------------------------------------------------------+
+   | 2             | drift frequency of the azimuthal wave number `m_min`        |
+   +---------------+-------------------------------------------------------------+
+   | 3             | drift frequency of the azimuthal wave number `m_min+1`      |
+   +---------------+-------------------------------------------------------------+
+   | 4             | drift frequency of the azimuthal wave number `m_min+2`      |
+   +---------------+-------------------------------------------------------------+
+   | ...           | drift frequency of the azimuthal wave number `m_max`        |
+   +---------------+-------------------------------------------------------------+

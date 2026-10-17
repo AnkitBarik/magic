@@ -14,6 +14,7 @@ module physical_parameters
    integer :: ktopv,kbotv  ! Velocity boundary condition
    integer :: ktopb,kbotb  ! Magnetic boundary condition
    integer :: ktopp        ! Boundary condition for spherically-symmetric pressure
+   integer :: ktopphi,kbotphi! Boundary conditions for phase field
 
    !-- Parameters for a localized temperature (entropy) disturbance at CMB
    integer :: impS         ! Heat boundary condition
@@ -48,18 +49,19 @@ module physical_parameters
    real(cp) :: Bn             ! Normalisation of He burning
    real(cp) :: strat          ! number of density scale heights
    real(cp) :: polind         ! polytropic index
+   real(cp) :: stef           ! Stefan number
    real(cp) :: ViscHeatFac    ! Prefactor for viscous heating: :math:`Di\,Pr/Ra`
    real(cp) :: OhmLossFac     ! Prefactor for Ohmic heating: :math:`Di\,Pr/(Ra\,E\,Pm^2)`
    real(cp) :: DissNb         ! Dissipation number
    real(cp) :: ThExpNb        ! Thermal expansion * temperature :math:`\alpha_0 T_0`
-   real(cp) :: GrunNb         ! Grüneisen paramater :math:`\Gamma=(\gamma-1)/\alpha T$
+   real(cp) :: GrunNb         ! Grüneisen paramater :math:`\Gamma=(\gamma-1)/\alpha T`
    real(cp) :: epsS           ! Deviation from the adiabat
-   real(cp) :: cmbHflux       ! stratified Layer
-   real(cp) :: slopeStrat     ! stratified Layer
-   real(cp) :: rStrat         ! stratified Layer
-   real(cp) :: ampStrat       ! stratified Layer
-   real(cp) :: thickStrat     ! stratified Layer
-   integer  :: nVarEntropyGrad! stratified Layer
+   integer, private, parameter :: nSSLmax = 5
+   real(cp) :: slopeStrat(nSSLmax) ! stiffness of the transitions to stratified layers
+   real(cp) :: rStrat(nSSLmax)     ! bottom radii of the stratified layers
+   real(cp) :: ampStrat(nSSLmax)   ! degree of stratification of the stratified layers
+   real(cp) :: thickStrat(nSSLmax) ! thicknesses of the stratified Layers
+   integer  :: nVarEntropyGrad     ! type of stratified Layer
    character(len=72) :: interior_model ! name of the interior model
    real(cp) :: r_cut_model    ! Percentage on the inner part of the interior model to be used
    real(cp) :: g0             ! Set to 1.0 for constant gravity
@@ -103,4 +105,11 @@ module physical_parameters
    real(cp) :: prec_angle     ! Precession angle
    real(cp) :: diff_prec_angle! Precession angle for differential precession
    real(cp) :: dilution_fac   ! Omega^2 d/g_top for centrifugal acceleration, named after Chandrasekhar (1987)
+   real(cp) :: epsPhase       ! Cahn number for phase field equatioo
+   real(cp) :: phaseDiffFac   ! Diffusion term of phase field
+   real(cp) :: penaltyFac     ! Factor that enters the penalty method in the NS equations
+   real(cp) :: tmelt          ! Melting temperature
+
+   real(cp) :: gammatau_gravi     ! Constant in front of the core/mantle gravitationnal torque (see Aubert et al. 2013)
+
 end module physical_parameters

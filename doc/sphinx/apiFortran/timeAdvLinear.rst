@@ -37,3 +37,8 @@ Linear calculation part of the time stepping (LMLoop)
 ----------------
 
 .. f:automodule:: updateb_mod
+
+``updatePHI.f90``
+------------------
+
+.. f:automodule:: updatephi_mod

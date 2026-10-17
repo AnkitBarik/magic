@@ -57,15 +57,15 @@ the toroidal field has not radial component:
 
 .. math::
   \begin{aligned}
-  \vec{e_r}\cdot \tilde{\rho}\vec{u} &=  - \Delta_H\,W, \\
-  \vec{e_r}\cdot\left(\vec{\nabla}\times\vec{u}\right) & = - \Delta_H\,Z,
+  \vec{e_r}\cdot \tilde{\rho}\vec{u} &=  - \nabla_H^2\,W, \\
+  \vec{e_r}\cdot\left(\vec{\nabla}\times\vec{u}\right) & = - \nabla_H^2\,Z,
   \end{aligned}
   :label: eqDeltaH
 
-where the operator :math:`\Delta_H` denotes the horizontal part of the Laplacian:
+where the operator :math:`\nabla_H^2` denotes the horizontal part of the Laplacian:
 
 .. math::
-  \Delta_H= \frac{1}{r^{2}\sin{\theta}}
+  \nabla_H^2= \frac{1}{r^{2}\sin{\theta}}
   \frac{\partial}{\partial\theta}\left(\sin{\theta}\frac{\partial}{\partial\theta}\right)
   + \frac{1}{r^{2}\sin^2{\theta}} \frac{\partial^{2}}{\partial^{2}\phi}.
   :label: eqLaplaceH
@@ -76,10 +76,10 @@ The three components of :math:`\tilde{\rho}\vec{u}`
 are given by
 
 .. math::
-   \tilde{\rho}\vec{u} = -(\Delta_H W)\,\vec{e_r} + \left( \dfrac{1}{r}
-   \dfrac{\partial W}{\partial \theta} + 
+   \tilde{\rho}\vec{u} = -(\nabla_H^2 W)\,\vec{e_r} + \left( \dfrac{1}{r}
+   \dfrac{\partial^2 W}{\partial r \partial \theta} + 
    \dfrac{1}{r\sin\theta}\dfrac{\partial Z}{\partial \phi}\right)\,\vec{e_\theta} 
-   +\left(\dfrac{1}{r\sin\theta}\dfrac{\partial W}{\partial \phi}-
+   +\left(\dfrac{1}{r\sin\theta}\dfrac{\partial^2 W}{\partial r\partial \phi}-
    \dfrac{1}{r}\dfrac{\partial Z}{\partial\theta} \right)\,\vec{e_\phi},
    :label: eqToroPolo1
 
@@ -87,12 +87,12 @@ while the curl of :math:`\tilde{\rho}\vec{u}` is expressed by
 
 .. math::
    \begin{aligned}
-   \vec{\nabla}\times\tilde{\rho}\vec{u} = &-(\Delta_H Z)\,\vec{e_r}+
+   \vec{\nabla}\times\tilde{\rho}\vec{u} = &-(\nabla_H^2 Z)\,\vec{e_r}+
    \left[-\dfrac{1}{r\sin\theta}\dfrac{\partial}{\partial\phi}\left(
-   \dfrac{\partial^2}{\partial r^2}+\Delta_H \right) W + \dfrac{1}{r}
+   \dfrac{\partial^2}{\partial r^2}+\nabla_H^2 \right) W + \dfrac{1}{r}
    \dfrac{\partial^2 Z}{\partial r\partial\theta}\right]\vec{e_\theta} \\
    &+\left[\dfrac{1}{r}\dfrac{\partial}{\partial\theta}\left(
-   \dfrac{\partial^2}{\partial r^2}+\Delta_H\right) W + \dfrac{1}{r \sin\theta} 
+   \dfrac{\partial^2}{\partial r^2}+\nabla_H^2\right) W + \dfrac{1}{r \sin\theta} 
    \dfrac{\partial^2 Z}{\partial r\partial\phi}\right]\vec{e_\phi},
    \end{aligned}
  :label: eqToroPolo2
@@ -106,14 +106,14 @@ Using the horizontal part of the divergence operator
 above expressions can be simplified to 
 
 .. math::
-   \tilde{\rho}\vec{u} = -\Delta_H\;\vec{e_r}\; W + \vec{\nabla}_H \dfrac{\partial}{\partial r}\;W 
+   \tilde{\rho}\vec{u} = -\nabla_H^2\;\vec{e_r}\; W + \vec{\nabla}_H \dfrac{\partial}{\partial r}\;W 
                          + \vec{\nabla}_H\times\vec{e}_r\;Z
                          
 and
 
 .. math::
-   \nabla\times\tilde{\rho}\vec{u} = -\Delta_H\;\vec{e}_r\;Z + \vec{\nabla}_H \dfrac{\partial}{\partial r}\;Z 
-                         - \vec{\nabla}_H\times\Delta_H\vec{e}_r\;W\;\;.
+   \nabla\times\tilde{\rho}\vec{u} = -\nabla_H^2\;\vec{e}_r\;Z + \vec{\nabla}_H \dfrac{\partial}{\partial r}\;Z 
+                         - \vec{\nabla}_H\times\nabla_H^2\vec{e}_r\;W\;\;.
 
 Below we will use the fact that the horizontal components of the poloidal field depend 
 on the radial derivative of the poloidal potential. 
@@ -208,7 +208,7 @@ analytically expressed by
 
 .. math::
    \boxed{
-   \Delta_H Y_{\ell}^{m} = -\dfrac{\ell(\ell+1)}{r^2}\,Y_{\ell}^{m}\,.
+   \nabla_H^2 Y_{\ell}^{m} = -\dfrac{\ell(\ell+1)}{r^2}\,Y_{\ell}^{m}\,.
    }
    :label: eqHorizLaplYlm
 
@@ -301,7 +301,7 @@ The third combined operator is defined by:
 .. math::
    \vartheta_3 = \sin\theta\dfrac{\partial}{\partial\theta}+\cos\theta\,L_H\,,
 
-where :math:`-L_H/r^2=\Delta_H`.
+where :math:`-L_H/r^2=\nabla_H^2`.
 
 Acting with :math:`\vartheta_3` on a Legendre function gives:
 
@@ -353,12 +353,12 @@ which results into:
 Radial representation
 =====================
 
-In MagIC, the radial dependencies are expanded into complete sets of functions: the 
-Chebyshev polynomials :math:`{\cal C}(x)`.  The polynomial of degree :math:`n` is defined by
+In MagIC, the radial dependencies are either expanded into complete sets of functions, the 
+Chebyshev polynomials :math:`{\cal C}(x)`; or discretized using finite differences. For the former approach, the Chebyshev polynomial of degree :math:`n` is defined by
 
 
 .. math::
-  {\cal C}_n(x)=\cos\left[n\,\arccos(x)\right]\quad -1\leq x \leq 1\,.
+  {\cal C}_n(x)\approx\cos\left[n\,\arccos(x)\right]\quad -1\leq x \leq 1\,.
 
 When truncating at degree :math:`N`, the radial expansion of the poloidal
 magnetic potential reads
@@ -387,22 +387,21 @@ grid-point density.
 When choosing the :math:`N_r` extrema of :math:`{\cal C}_{N_r-1}`  as radial grid points,
 
 .. math::
-   x_k=\cos{\left(\pi \frac{(k-1)}{N_r-1}\right)}\;\;\;,\;\;\; k=1,2,\ldots,N_r ,
+   x_k=\cos{\left[\pi \frac{(k-1)}{N_r-1}\right]}\;\;\;,\;\;\; k=1,2,\ldots,N_r ,
    :label: eqChebGrid
 
 the values of the Chebyshev polynomials at these points are simply given by
 the cosine functions:
 
 .. math::
-  {\cal C}_{nk} = {\cal C}_n(x_k)=\cos{\left(\pi \frac{ n (k-1)}{N_r-1}\right)} .
+  {\cal C}_{nk} = {\cal C}_n(x_k)=\cos{\left[\pi \frac{ n (k-1)}{N_r-1}\right]} .
 
 This particular choice has two advantages.
 For one, the grid points become denser toward the inner and outer
 radius and better resolve potential thermal and viscous boundary layers.
-In addition, FFTs can be employed to switch between
+In addition, type I Discrete Cosine Transforms (DCTs) can be employed to switch between
 grid representation :eq:`eqGridCheb` and Chebyshev representations :eq:`eqSpecCheb`,
 rendering this procedure a fast-Chebyshev transform.
-Choosing :math:`N_r>N` provides radial dealiasing.
 
 .. seealso:: The Chebyshev (Gauss-Lobatto) grid is defined in the module
              :f:mod:`chebyshev_polynoms_mod`. The cosine transforms are computed in the
@@ -442,18 +441,18 @@ time-derivative, one gets using :eq:`eqDeltaH`:
 
 .. math::
    \tilde{\rho}\vec{e_r}\cdot\left(\dfrac{\partial \vec{u}}{\partial t}\right) =
-   \dfrac{\partial}{\partial t}(\vec{e_r}\cdot\tilde{\rho}\vec{u})=-\Delta_H\dfrac{\partial
+   \dfrac{\partial}{\partial t}(\vec{e_r}\cdot\tilde{\rho}\vec{u})=-\nabla_H^2\dfrac{\partial
    W}{\partial t}.
 
 For the viscosity term, one gets
 
 .. math::
    \begin{aligned}
-   \vec{e_r}\cdot\vec{\nabla}\cdot \mathsf{S} = & -\nu\,\Delta_H\left[\dfrac{\partial^2 W}
+   \vec{e_r}\cdot\vec{\nabla}\cdot \mathsf{S} = & -\nu\,\nabla_H^2\left[\dfrac{\partial^2 W}
    {\partial r^2}
    +\left\lbrace 2\dfrac{d\ln\nu}{dr}-\dfrac{1}{3}\dfrac{d\ln\tilde{\rho}}{dr}\right\rbrace
    \dfrac{\partial W}{\partial r} \right. \\
-   & -\left. \left\lbrace -\Delta_H + \dfrac{4}{3}\left(\dfrac{d^2\ln\tilde{\rho}}{dr^2}
+   & -\left. \left\lbrace -\nabla_H^2 + \dfrac{4}{3}\left(\dfrac{d^2\ln\tilde{\rho}}{dr^2}
    +\dfrac{d\ln\nu}{dr} \dfrac{d\ln\tilde{\rho}}{dr}  +
    \dfrac{1}{r}\left[3\dfrac{d\ln\nu}{dr}+
    \dfrac{d\ln\tilde{\rho}}{dr}\right] \right) \right\rbrace W\right],
@@ -465,8 +464,8 @@ For the viscosity term, one gets
           viscosity term would then be simplified as
 
           .. math::
-            \vec{e_r}\cdot\Delta \vec{u} = -\Delta_H\left[\dfrac{\partial^2 W}{\partial r^2}
-            +\Delta_H\,W\right]\,.
+            \vec{e_r}\cdot\vec{\nabla}^2 \vec{u} = -\nabla_H^2\left[\dfrac{\partial^2 W}{\partial r^2}
+            +\nabla_H^2\,W\right]\,.
 
 Using Eq. :eq:`eqHorizLaplYlm` then allows to finally write the time-evolution equation
 for the poloidal potential :math:`W_{\ell m n}`:
@@ -507,8 +506,8 @@ the time derivative, one gets using :eq:`eqDeltaH`:
 .. math::
    \vec{e_r}\cdot\vec\nabla\times\left(\dfrac{\partial\tilde{\rho}\vec{u}}{\partial t}\right)=
    \dfrac{\partial}{\partial t}(\vec{e_r}\cdot\vec{\nabla}\times\tilde{\rho}
-   \vec{u})=-\dfrac{\partial}{\partial t}(\Delta_H Z) =
-   -\Delta_H\dfrac{\partial Z}{\partial t}\,.
+   \vec{u})=-\dfrac{\partial}{\partial t}(\nabla_H^2 Z) =
+   -\nabla_H^2\dfrac{\partial Z}{\partial t}\,.
 
 The pressure gradient, one has
 
@@ -526,20 +525,20 @@ radial component.
 .. math::
    \begin{aligned}
    \vec{e_r}\cdot\vec{\nabla}\times\left[\vec{\nabla}\cdot\mathsf{S}\right] = &
-   -\nu\,\Delta_H\left[\dfrac{\partial^2 Z}{\partial r^2}
+   -\nu\,\nabla_H^2\left[\dfrac{\partial^2 Z}{\partial r^2}
    +\left(\dfrac{d\ln\nu}{dr}-\dfrac{d\ln\tilde{\rho}}{dr}\right)\,\dfrac{\partial Z}{\partial r}  \right.\\
    & \left. - \left(\dfrac{d\ln\nu}{dr}\dfrac{d\ln\tilde{\rho}}{dr}+
      \dfrac{2}{r}\dfrac{d\ln\nu}{dr}+
      \dfrac{d^2\ln\tilde{\rho}}{dr^2}+\dfrac{2}{r}
-   \dfrac{d\ln\tilde{\rho}}{dr}-\Delta_H\right) Z \right].
+   \dfrac{d\ln\tilde{\rho}}{dr}-\nabla_H^2\right) Z \right].
    \end{aligned}
 
 .. note:: Once again, this viscous term can be greatly simplified in the Boussinesq limit:
 
           .. math::
-            \vec{e_r}\cdot\vec{\nabla}\times\left(\Delta \vec{u}\right) = 
-            -\Delta_H\left[\dfrac{\partial^2 Z}{\partial r^2}
-            +\Delta_H\,Z\right]\,.
+            \vec{e_r}\cdot\vec{\nabla}\times\left(\vec{\nabla}^2 \vec{u}\right) = 
+            -\nabla_H^2\left[\dfrac{\partial^2 Z}{\partial r^2}
+            +\nabla_H^2\,Z\right]\,.
 
 Using Eq. :eq:`eqHorizLaplYlm` then allows to finally write the time-evolution equation
 for the poloidal potential :math:`Z_{\ell m n}`:
@@ -592,9 +591,9 @@ The time-derivative term is thus expressed by
    -\dfrac{1}{r^2}\dfrac{\partial(r^2\tilde{\rho} u_r)}{\partial r}\right], \\
    & = -\dfrac{\partial}{\partial t}\left[\dfrac{\partial (\tilde{\rho} u_r)}{\partial r}
    +\dfrac{2\tilde{\rho} u_r}{r}\right], \\
-   & = \dfrac{\partial}{\partial t}\left[\dfrac{\partial (\Delta_H W)}{\partial r}
-   +\dfrac{2}{r}\Delta_H W\right], \\
-   & = \Delta_H\dfrac{\partial}{\partial t}\left(\dfrac{\partial W}{\partial r}\right).
+   & = \dfrac{\partial}{\partial t}\left[\dfrac{\partial (\nabla_H^2 W)}{\partial r}
+   +\dfrac{2}{r}\nabla_H^2 W\right], \\
+   & = \nabla_H^2\dfrac{\partial}{\partial t}\left(\dfrac{\partial W}{\partial r}\right).
    \end{aligned}
 
 We note that the gravity term vanishes since :math:`\vec{\nabla}_H\cdot(\tilde{\rho}
@@ -606,28 +605,28 @@ g(r)\vec{e_r}) = 0`. Concerning the pressure gradient, one has
    \left(\dfrac{p'}{\tilde{\rho}}\right)\right]-
    \dfrac{1}{r^2}\dfrac{\partial}{\partial r}\left[ r^2 \tilde{\rho} 
    \dfrac{\partial}{\partial r}\left(\dfrac{p'}{\tilde{\rho}}\right)\right] \right\rbrace = 
-   -\Delta_H \, p'.
+   -\nabla_H^2 \, p'.
 
 The viscosity term then reads
 
 .. math::
   \begin{aligned}
-  \vec{\nabla}_H\cdot \left( \vec{\nabla}\cdot\mathsf{S} \right) = & \nu\,\Delta_H\left[
+  \vec{\nabla}_H\cdot \left( \vec{\nabla}\cdot\mathsf{S} \right) = & \nu\,\nabla_H^2\left[
   \dfrac{\partial^3 W}{\partial r^3} + \left(\dfrac{d\ln\nu}{dr}-
   \dfrac{d\ln\tilde{\rho}}{dr}\right) \dfrac{\partial^2 W}{\partial r^2} \right. \\
   & - \left[\dfrac{d^2\ln\tilde{\rho}}{dr^2} + \dfrac{d\ln\nu}{dr}\dfrac{d\ln\tilde{\rho}}{dr}+
   \dfrac{2}{r}\left(\dfrac{d\ln\nu}{dr}+\dfrac{d\ln\tilde{\rho}}{dr}\right)
-  -\Delta_H \right]\dfrac{\partial W}{\partial r} \\
+  -\nabla_H^2 \right]\dfrac{\partial W}{\partial r} \\
   & \left. -\left( \dfrac{2}{3}\dfrac{d\ln\tilde{\rho}}{dr}+\dfrac{2}{r}+\dfrac{d\ln\nu}{dr}
-  \right)\Delta_H\,W \right].
+  \right)\nabla_H^2\,W \right].
   \end{aligned}
 
 .. note:: Once again, this viscous term can be greatly simplified in the Boussinesq limit:
 
           .. math::
-            \vec{\nabla}_H\cdot\left(\Delta \vec{u}\right) = 
-            -\Delta_H\left[\dfrac{\partial^3 W}{\partial r^3}
-            +\Delta_H\,\dfrac{\partial W}{\partial r}-\dfrac{2}{r}\Delta_H\,W\right]\,.
+            \vec{\nabla}_H\cdot\left(\nabla^2 \vec{u}\right) = 
+            -\nabla_H^2\left[\dfrac{\partial^3 W}{\partial r^3}
+            +\nabla_H^2\,\dfrac{\partial W}{\partial r}-\dfrac{2}{r}\nabla_H^2\,W\right]\,.
 
 Using Eq. :eq:`eqHorizLaplYlm` then allows to finally write the equation for the pressure
 :math:`P_{\ell m n}`:
@@ -741,7 +740,7 @@ component of the dynamo equation since
 
 .. math::
   \vec{e_r}\cdot\left(\dfrac{\partial \vec{B}}{\partial t}\right) =
-   \dfrac{\partial}{\partial t}(\vec{e_r}\cdot\vec{B})=-\Delta_H\dfrac{\partial
+   \dfrac{\partial}{\partial t}(\vec{e_r}\cdot\vec{B})=-\nabla_H^2\dfrac{\partial
    g}{\partial t}.
 
 The spectral form then reads 
@@ -829,70 +828,61 @@ also results in a much larger (albeit sparse) inversion matrix.
 We consequently adopt in **MagIC** a mixed implicit/explicit algorithm.
 The general differential equation in time can be written in the form
 
-.. math:: \dfrac{\partial }{\partial t} x + \mathcal{I}(x,t) = \mathcal{E}(x,t)\;\;.
+.. math:: \dfrac{\partial }{\partial t} y = \mathcal{I}(y,t) + \mathcal{E}(y,t),\quad y(t_o)=y_o\;.
+  :label: eqTstep
 
 where :math:`\mathcal{I}` denotes the terms treated in an implicit time step 
-and :math:`\mathcal{E}` the terms treated explicitly, i.e.~the nonlinear and Coriolis contributions.  
-The discretized implicit time step is given by 
+and :math:`\mathcal{E}` the terms treated explicitly, i.e. the nonlinear and Coriolis contributions.  In MagIC, two families of time-stepping schemes are supported: IMEX multistep and IMEX multistage methods.
 
-.. math:: \left(\dfrac{x(t+\delta t) - x(t)}{\delta t}\right)_I = -\alpha\;\mathcal{I}(x,t+\delta t) - (1-\alpha)\;\mathcal{I}(x,t)\;\;.
+First of all, the IMEX multistep methods correspond to time schemes where the solution results from the combination of several previous steps (such as for instance the Crank-Nicolson/Adams-Bashforth scheme). In this case, a general :math:`k`-step IMEX multistep scheme reads
 
-where :math:`\alpha` is the weight of the new time step. 
-For :math:`\alpha=0.5` we recover a classic 
-`Crank-Nicolson
-<https://en.wikipedia.org/wiki/Crank–Nicolson_method>`_ algorithm.
+.. math:: \left(I-b_o^{\mathcal I} \delta t\,\mathcal{I}\right)y_{n+1}=\sum_{j=1}^k a_j y_{n+1-j}+\delta t\sum_{j=1}^k \left(b_j^\mathcal{E} \mathcal{E}_{n+1-j}+b_{j}^\mathcal{I}\mathcal{I}_{n+1-j}\right)\,,
 
-A  second order
-`Adams-Bashforth <https://en.wikipedia.org/wiki/Linear_multistep_method>`_ 
-scheme is used for the explicit time step:
+where :math:`I` is the identity matrix. The vectors :math:`\vec{a}`, :math:`\vec{b}^\mathcal{E}` and :math:`\vec{b}^\mathcal{I}` correspond to the weighting factors of an IMEX multistep scheme.  For instance, the commonly-used second-order scheme assembled from the combination of a Crank-Nicolson for the implicit terms and a second-order Adams-Bashforth for the explicit terms (hereafter CNAB2) corresponds to the following vectors: :math:`\vec{a}=(1,0)`, :math:`\vec{b}^{\mathcal{I}}=(1/2,1/2)` and :math:`\vec{b}^{\mathcal{E}}=(3/2,-1/2)` for a constant timestep size :math:`\delta t`.  
 
-.. math:: \left(\dfrac{x(t+\delta t) - x(t)}{\delta t}\right)_E = \dfrac{3}{2}\;\mathcal{E}(x,t)
-          - \dfrac{1}{2}\;\mathcal{E} (x,t-\delta t)\;\;.
+In addition to CNAB2, MagIC supports several semi-implicit backward differentiation schemes of second, third and fourth order that are known to have good stability properties (heareafter SBDF2, SBDF3 and SBDF4), a modified CNAB2 from `Ascher et al. (1995) <https://doi.org/10.1137/0732037>`_ (termed MODCNAB) and the CNLF scheme (combination of Crank-Nicolson and Leap-Frog for the explicit terms).
 
-The combination of both steps yields 
+MagIC also supports several IMEX Runge-Kutta multistage methods, frequently
+called DIRK, an acronym that stands for *Diagonally Implicit Runge Kutta*. For
+such schemes, the equation :eq:`eqTstep` is time-advanced from :math:`t_n` to :math:`t_{n+1}` by solving :math:`\nu` sub-stages
 
-.. math::
-    \dfrac{x(t+\delta t)}{\delta t}  + \alpha\;\mathcal{I}(x,t+\delta t) =  
-    \dfrac{x(t)}{\delta t} - (1-\alpha)\;\mathcal{I}(x,t) + 
-    \frac{3}{2}\;\mathcal{E}(x,t) - \dfrac{1}{2}\;\mathcal{E}(x,t-\delta t)\;\;.
-    
-In the code such an equation is formulated for each unknown spectral coefficient  
+.. math:: (I-a_{ii}^\mathcal{I}\delta t \mathcal{I})y_{i}=y_n+\delta t \sum_{j=1}^{i-1}\left(a_{i,j}^{\mathcal{E}}\mathcal{E}_j+a_{i,j}^\mathcal{I}\mathcal{I}_j\right), \quad 1\leq i\leq \nu,
+
+where :math:`y_i` is the intermediate solution at the stage :math:`i`. The matrices :math:`a_{i,j}^\mathcal{E}` and :math:`a_{i,j}^\mathcal{I}` constitute the so-called Butcher tables that correspond to a DIRK scheme. MagIC supports several second and third order schemes: ARS222 and ARS443 from `Ascher et al. (1997) <https://doi.org/10.1016/S0168-9274(97)00056-1>`_, LZ232 from `Liu and Zou (2006) <https://doi.org/10.1016/j.cam.2005.02.020>`_, PC2 from `Jameson et al. (1981) <https://doi.org/10.2514/6.1981-1259>`_ and  BPR353 from `Boscarino et al. (2013) <https://doi.org/10.1137/110842855>`_.
+
+
+In the code the equation :eq:`eqTstep` is formulated for each unknown spectral coefficient  
 (expect pressure) of spherical harmonic degree :math:`\ell` and order :math:`m` 
 and for each radial grid point :math:`r_k`. 
 Because non-linear terms and the Coriolis force are treated explicitly, 
-the equations decouple for all spherical modes.
+the equations decouple for all spherical harmonic modes.
 The different radial grid points, however, couple via the 
-Chebychev modes and form a linear algebraic system of equations that can 
+Chebyshev modes and form a linear algebraic system of equations that can 
 be solved with standard methods for the different spectral contributions. 
 
-For example the respective system of equations for the modes of the poloidal magnetic potential :math:`g` 
-results from considering the radial component of the dynamo equation:  
+For example the respective system of equations for the poloidal magnetic potential :math:`g` time advanced with a CNAB2 reads
 
 .. math::
-      \left( \mathcal{A}_{kn} + \alpha\;\mathcal{I}_{kn}\right)\;g_{\ell mn}(t+\delta t) =
-      \left( \mathcal{A}_{kn} - (1 - \alpha)\;\mathcal{I}_{kn} \right)\;g_{\ell mn}(t) +
-      \frac{3}{2}\;\mathcal{E}_{k\ell m}(t) - \frac{1}{2}\;\mathcal{E}_{k\ell m}(t-\delta t) 
+      \left( \mathcal{A}_{kn} - \dfrac{1}{2}\,\delta t\,\mathcal{I}_{kn}\right)\;g_{\ell mn}(t+\delta t) =
+      \left( \mathcal{A}_{kn} + \dfrac{1}{2}\,\delta t\,\mathcal{I}_{kn} \right)\;g_{\ell mn}(t) +
+      \frac{3}{2}\,\delta t\,\mathcal{E}_{k\ell m}(t) - \frac{1}{2}\,\delta t\,\mathcal{E}_{k\ell m}(t-\delta t) 
       :label: imex
 
 with 
 
 .. math::
-    \mathcal{A}_{kn} = \dfrac{\ell (\ell+1)}{r_k^2}\,\dfrac{1}{\delta t} {\cal C}_{nk}\;,
-
+    \mathcal{A}_{kn} = \dfrac{\ell (\ell+1)}{r_k^2}\,{\cal C}_{nk}\;,
 
 .. math::
-    \mathcal{I}_{kn}=\dfrac{\ell(\ell+1)}{r_k^2}\,\dfrac{1}{Pm}\left( \dfrac{\ell(\ell+1)}{r_k^2}\; 
-    {\cal C}_{nk}-{\cal C}''_{nk} \right)\;,
+    \mathcal{I}_{kn}=\dfrac{\ell(\ell+1)}{r_k^2}\,\dfrac{1}{Pm}\left({\cal C}''_{nk} - \dfrac{\ell(\ell+1)}{r_k^2}\; 
+    {\cal C}_{nk}\right)\;,
 
 and :math:`{\cal C}_{nk}={\cal C}_n(r_k)`.
 :math:`\mathcal{A}_{kn}` is a matrix that converts the poloidal field modes :math:`g_{\ell mn}` 
-to the radial magnetic field :math:`B_r(r_k,\ell m)` for a given spherical harmonic contribution 
-with an additional division by the time step :math:`\delta t`:
+to the radial magnetic field :math:`B_r(r_k,\ell,m)` for a given spherical harmonic contribution.
 
-.. math: \dfrac{B_r(r_k,\ell m)}{\delta t} = \mathcal{A}_{kn}\;g_{\ell m n}. 
-
-Here :math:`k` and :math:`n` number the radial grid points and the Chebychev coefficients, respectively. 
-Note that the Einstein sum convention is used for Chebychev modes :math:`n`.
+Here :math:`k` and :math:`n` number the radial grid points and the Chebyshev coefficients, respectively. 
+Note that the Einstein sum convention is used for Chebyshev modes :math:`n`.
 
 :math:`\mathcal{I}_{kn}` is the matrix describing the implicit contribution which is purely diffusive here. 
 Neither  :math:`\mathcal{A}_{kn}` nor :math:`\mathcal{I}_{kn}` depend on time but the former 
@@ -905,50 +895,6 @@ The only explicit contribution is the nonlinear dynamo term
 :math:`\mathcal{E}_{k\ell m}` is a one dimensional vector for all spherical harmonic combinations 
 :math:`\ell m`.
   
-How are these operations organized in the code? Within MagIC the poloidal magnetic field potential 
-is called ``b``. 
-The implicit step for the current time :math:`t` and the explicit step for the previous 
-time :math:`t-\delta t` is combined into one two-dimensional array 
-
-.. math:: \texttt{dbdtLast}(k,lm) =  - \frac{1}{2}\;\mathcal{E}_{k \ell m}(t-\delta t) - 
-          (1 - \alpha)\;\mathcal{I}_{kn} \;g_{\ell mn}(t)\;.
-
-where :math:`k` numbers the first dimension and the second dimension :math:`lm` numbers the spherical harmonic modes. 
-The explicit time step part is called ``dbdt`` in MagIC:
-
-.. math:: \texttt{dbdt}(k,\ell m) = \mathcal{E}_{k\ell m}.
-
-The combination of left hand side of :eq:`imex` provides the time stepping matrix for :math:`g`:
-
-.. math:: \texttt{bmat}(k,n,\ell) = {A}_{kn} + \alpha \mathcal{I}_{kn}\;.
-
-There is a different time stepping matrix for each spherical harmonic degree :math:`\ell`. 
-The linear system of equations solved for the mode :math:`\texttt{b}(k,\ell m)` at 
-time  :math:`t=t+\delta t` is then
-
-.. math:: 
-      \begin{split}
-        \texttt{bmat}(k,n,\ell) \star \texttt{b}_{i+1}(n,\ell m)  = &
-       \texttt{w1}\star\texttt{dbdt}(k,\ell m) + \texttt{w2}\star\texttt{dbdtLast}(k,\ell m)\; + \\
-        & \texttt{Odt}\star\texttt{dLh}(\ell)\star\texttt{Or2}(k)\star\texttt{b}_i(n,\ell m) \\
-        = & \texttt{rhs}(k,\ell m)
-       \end{split}\;
-       
-with
-
-..  math:: \texttt{w2}=-1/2 \dfrac{\delta t}{\delta t_{old}}\;\; , \;\; \texttt{w1}=1-\texttt{w2}\;\; , \;\;
-           \texttt{Odt}=1/\delta t\;\;,\;\;\texttt{dLh}(\ell)=\ell (\ell+1)
-           \;\;,\;\;\texttt{Or2}(k)=1/r_k^2.
-  
-
-The respective equations for the poloidal flow potential are somewhat more complex and involve coupling 
-to the pressure.....
-
-.. note::  The poloidal flow potential :eq:`eqSpecW` and the pressure :eq:`eqSpecP`
-           are nevertheless coupled for a given spherical harmonic mode. Likewise 
-           the poloidal flow and entropy (or temperature) equations should also
-           couple, but here MagIC takes the shortcut of updating entropy first 
-           and using the already updated value for an explicit treatment of buoyancy.
 
 **Courant's condition** offers a guideline
 concerning the value of :math:`\delta t`, demanding that :math:`\delta t` should be smaller
@@ -1062,8 +1008,8 @@ The Coriolis force can be rewritten as a function of :math:`W` and :math:`Z`:
     & = 2\left[\cos\theta\dfrac{\partial (\tilde{\rho} u_r)}{\partial r}
     -\dfrac{\sin\theta}{r}\dfrac{\partial (\tilde{\rho}
     u_r)}{\partial \theta}+\dfrac{\tilde{\rho} u_\theta\sin\theta}{r}\right], \\
-    & = 2\left[-\cos\theta\dfrac{\partial}{\partial r}(\Delta_H W)+
-    \dfrac{\sin\theta}{r}\dfrac{\partial}{\partial \theta}(\Delta_H
+    & = 2\left[-\cos\theta\dfrac{\partial}{\partial r}(\nabla_H^2 W)+
+    \dfrac{\sin\theta}{r}\dfrac{\partial}{\partial \theta}(\nabla_H^2
     W)+\dfrac{\sin\theta}{r^2}\dfrac{\partial^2 W}{\partial r\partial \theta}+
     \dfrac{1}{r^2}\dfrac{\partial Z}{\partial \phi}\right].
     \end{aligned}
@@ -1141,21 +1087,21 @@ The Coriolis force can be rewritten as a function of :math:`W` and :math:`Z`:
     \vec{e_z}\right] & =2\vec{e_z}\cdot\left[\vec{\nabla}\times(\tilde{\rho}
     \vec{u})\right] -\left(\dfrac{\partial}{\partial r}+\dfrac{2}{r}\right)
     \left[\vec{e_r}\cdot(2\tilde{\rho}\vec{u}\times\vec{e_z})\right],\\
-    & = -2\cos\theta\,\Delta_H Z-2\sin\theta\left[-\dfrac{1}{r\sin\theta}
+    & = -2\cos\theta\,\nabla_H^2 Z-2\sin\theta\left[-\dfrac{1}{r\sin\theta}
     \dfrac{\partial}{\partial\phi}\left(
-    \dfrac{\partial^2}{\partial r^2}+\Delta_H \right) W +
+    \dfrac{\partial^2}{\partial r^2}+\nabla_H^2 \right) W +
     \dfrac{1}{r}\dfrac{\partial^2 Z}{\partial r\partial\theta}\right]
     \\
     & \phantom{=\cos\theta} -\left(\dfrac{\partial}{\partial r}+\dfrac{2}{r}\right)
     \left[2\sin\theta\tilde{\rho}u_\phi\right], \\
-    & = 2\left[\dfrac{1}{r}\left(\Delta_H+\dfrac{\partial^2}{\partial r^2}\right)
-    \dfrac{\partial W}{\partial \phi}-\cos\theta\Delta_H Z -\dfrac{\sin\theta}{r}
+    & = 2\left[\dfrac{1}{r}\left(\nabla_H^2+\dfrac{\partial^2}{\partial r^2}\right)
+    \dfrac{\partial W}{\partial \phi}-\cos\theta\nabla_H^2 Z -\dfrac{\sin\theta}{r}
     \dfrac{\partial^2 Z}{\partial r \partial \theta}\right] \\
     & \phantom{=\cos\theta} -\left(\dfrac{\partial}{\partial r}+\dfrac{2}{r}\right)
     \left[\dfrac{2}{r}\left(\dfrac{\partial^2 W}{\partial r\partial\phi}-\sin\theta
     \dfrac{\partial Z}{\partial \theta}\right)\right], \\
-    & = 2\left(\dfrac{\Delta_H}{r}\dfrac{\partial W}{\partial \phi}-\dfrac{1}{r^2}
-    \dfrac{\partial^2 W}{\partial\phi\partial r} -\cos\theta\Delta_H\,Z
+    & = 2\left(\dfrac{\nabla_H^2}{r}\dfrac{\partial W}{\partial \phi}-\dfrac{1}{r^2}
+    \dfrac{\partial^2 W}{\partial\phi\partial r} -\cos\theta\nabla_H^2\,Z
     +\dfrac{\sin\theta}{r^2}\dfrac{\partial Z}{\partial \theta}\right).
     \end{aligned}
 
@@ -1461,18 +1407,18 @@ induction term :eq:`eqDynamoTerm`:
    {\cal N}^h = \vec{e_r}\cdot\left[\vec{\nabla}\times\vec{\nabla}\times\left(\vec{u}\times\vec{B}\right)
    \right]
    & =\vec{e_r}\cdot\left[\vec{\nabla}\left(\vec{\nabla}\cdot\vec{\mathcal{F}}\right)
-   -\Delta\vec{\mathcal{F}}\right], \\
+   -\nabla^2\vec{\mathcal{F}}\right], \\
    & = \dfrac{\partial}{\partial r}\left[\dfrac{1}{r^2}
    \dfrac{\partial(r^2 {\mathcal{F}}_r)}{\partial r} + \dfrac{1}{r\sin\theta}
    \dfrac{\partial(\sin\theta\,{\mathcal{F}}_\theta)}{\partial\theta}+\dfrac{1}{r\sin\theta}
    \dfrac{\partial{\mathcal{F}}_\phi}{\partial\phi} \right] \\
    & \phantom{=\ }-
-   \Delta {\mathcal{F}}_r+\dfrac{2}{r^2}\left[{\mathcal{F}}_r +\dfrac{1}{\sin\theta}
+   \nabla^2 {\mathcal{F}}_r+\dfrac{2}{r^2}\left[{\mathcal{F}}_r +\dfrac{1}{\sin\theta}
    \dfrac{\partial(\sin\theta\,{\mathcal{F}}_\theta)}{\partial\theta}+
    \dfrac{1}{\sin\theta}\dfrac{\partial {\mathcal{F}}_\phi}{\partial \phi}\right], \\
    & = \dfrac{1}{r^2}\dfrac{\partial}{\partial r}\left[\dfrac{r}{\sin\theta}\left(
    \dfrac{\partial(\sin\theta\,{\mathcal{F}}_\theta)}{\partial\theta}+
-   \dfrac{\partial{\mathcal{F}}_\phi}{\partial\phi} \right)\right]-\Delta_H\,{\mathcal{F}}_r\,.
+   \dfrac{\partial{\mathcal{F}}_\phi}{\partial\phi} \right)\right]-\nabla_H^2\,{\mathcal{F}}_r\,.
    \end{aligned}
 
 To make use of the recurrence relations :eq:`eqOpTheta1`-:eq:`eqOpTheta4`, we then follow
@@ -1555,11 +1501,38 @@ angular momentum replaces condition :eq:`eqBcRigid3` for the mode
 :math:`(\ell =1,m=0)`:
 
 .. math::
-  \mathsf{I} \dfrac{\partial\vec{\omega}}{\partial t}= \vec{\Gamma}\;\;.
+   \mathsf{I} \dfrac{\partial\omega}{\partial t}= \Gamma_L+\Gamma_\nu+\Gamma_g\,.
 
-The tensor :math:`\mathsf{I}` denotes the moment of inertia of inner core or mantle,
-respectively, :math:`\vec{\omega}` is the mantle or inner-core rotation rate relative
-to that of the reference frame, and :math:`\vec{\Gamma}` is the respective torque.
+The tensor :math:`\mathsf{I}` denotes the moment of inertia of the inner core or the mantle,
+respectively, :math:`\omega` is the mantle or inner-core rotation rate relative
+to that of the reference frame, and :math:`\Gamma_{L,\nu,g}` are the respective torques
+associated with Lorentz, viscous or gravity forces. The torques are expressed by
+
+.. math::
+   \Gamma_L = \dfrac{1}{E\,Pm}\oint B_r B_\phi\,r\sin\theta\,\mathrm{d}S\,,
+
+and
+
+.. math::
+   \Gamma_\nu = \oint \tilde{\rho} \tilde{\nu} r\dfrac{\partial}{\partial r}\left(\dfrac{u_\phi}{r}\right) r\sin\theta\,\mathrm{d}S\,,
+
+and
+
+.. math::
+   \Gamma_g = -\Gamma\tau(\omega_{ic}-\omega_{ma})\,,
+
+where :math:`\mathrm{d}S = r^2\sin\theta \mathrm{d}\theta\mathrm{d}\phi` and :math:`r\in[r_i,r_o]` in the above expressions. Using the following equality
+
+.. math::
+   \oint \tilde{\rho} r\sin\theta u_\phi\,\mathrm{d} S=4\sqrt{\dfrac{\pi}{3}}Z_{10}r^2,
+   
+the viscous torques can be expressed by
+
+.. math::
+   \Gamma_\nu = \pm4\sqrt{\dfrac{\pi}{3}}\tilde{\nu}r^2\left[\dfrac{\partial Z_{10}}{\partial r}-\left(\dfrac{2}{r}+\beta\right)Z_{10}\right]\,,
+
+where the sign in front depends whether :math:`r=r_o` or :math:`r=r_i`.
+
 
 **Free-slip boundary conditions** require that the viscous stress vanishes, which
 in turn implies that the non-diagonal components :math:`\mathsf{Sr}_{r\phi}` and
@@ -1577,7 +1550,7 @@ We show the derivation for the somewhat simpler Boussinesq approximation which y
 .. math::
    \dfrac{\partial}{\partial r} \dfrac{\vec{u}_H}{r} = 0
    
-where the index H denotes the horizonal flow components. 
+where the index H denotes the horizontal flow components. 
 In terms of poloidal and toroidal components this implies 
 
 .. math::
@@ -1623,7 +1596,7 @@ at :math:`r_i` and/or :math:`r_o`, while the latter means
 
 In spectral representation for example the respective entropy condition read
 
-.. math:: {\cal C}_n s_{\ell mn}=\mbox{const.}\;\;\mbox{or}\;\;{\cal C'}_n s_{\ell mn}=\mbox{const.}
+.. math:: {\cal C}_n s_{\ell mn}=\mbox{const.}\;\;\mbox{or}\;\;{\cal C}'_n s_{\ell mn}=\mbox{const.}
 
 Appropriate constant values need to be chosen and are instrumental in driving the dynamo when 
 flux conditions are imposed. 
@@ -1643,8 +1616,20 @@ at :math:`r_i` and/or :math:`r_o`, while the latter means
 
 In spectral representation, this then reads
 
-.. math:: {\cal C}_n \xi_{\ell mn}=\mbox{const.}\;\;\mbox{or}\;\;{\cal C'}_n \xi_{\ell mn}=\mbox{const.}
+.. math:: {\cal C}_n \xi_{\ell mn}=\mbox{const.}\;\;\mbox{or}\;\;{\cal C}'_n \xi_{\ell mn}=\mbox{const.}
 
+
+Boundary conditions for phase field
+-----------------------------------
+
+For the phase field, either the value of the phase or its gradient can be imposed.
+In the former case, this corresponds to
+
+.. math:: \phi(r_i)=0, \quad \phi(r_o)=1,
+
+while the latter means
+
+.. math:: \dfrac{\partial\phi}{\partial r}=0.
 
 Magnetic boundary conditions and inner core
 -------------------------------------------
@@ -1676,7 +1661,7 @@ Here we actually use matching condition to a potential field condition
 that are formulated like boundary conditions.  
 Since the electrical currents have to vanish in the insulator we have :math:`\nabla\times\vec{B}`, 
 which means that the magnetic field is a potential field :math:`\vec{B}^I=-\vec{\nabla} V` 
-with :math:`\Delta V=0`. This Laplace equation implies a coupling between radial and 
+with :math:`\nabla^2 V=0`. This Laplace equation implies a coupling between radial and 
 horizontal derivatives which is best solved in spectral space. Two potential contributions 
 have to be considered depending whether the field is produced above the interface radius 
 :math:`r_{BC}` or below. We distinguish these contributions with upper indices I for internal 

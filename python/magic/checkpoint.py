@@ -24,7 +24,7 @@ def get_truncation(n_theta_max, nalias, minc):
 
     return lmax, mmax, lm_max
 
-def get_map(lm_max, lmax, mmax, minc):
+def get_map(lm_max, lmax, mmin, mmax, minc):
     """
     This routine determines the look-up tables to convert the indices
     (l, m) to the single index lm.
@@ -33,6 +33,8 @@ def get_map(lm_max, lmax, mmax, minc):
     :type lm_max: int
     :param lmax: maximum spherical harmonic degree
     :type lmax: int
+    :param mmin: minimum spherical harmonic order
+    :type mmin: int
     :param mmax: maximum spherical harmonic order
     :type mmax: int
     :param minc: azimuthal symmetry
@@ -40,26 +42,23 @@ def get_map(lm_max, lmax, mmax, minc):
     :returns: returns a list of three look-up tables: idx, lm2l, lm2m
     :rtype: list
     """
-    idx = np.zeros((lmax+1, mmax+1), np.int8)
-    lm2l = np.zeros(lm_max, np.int8)
-    lm2m = np.zeros(lm_max, np.int8)
-    idx[0:lmax+2, 0] = np.arange(lmax+1)
-    lm2l[0:lmax+1] = np.arange(lmax+1)
-    lm2m[0:lmax+2] = 0
-    k = lmax+1
-    for m in range(minc, lmax+1, minc):
+    idx = np.zeros((lmax+1, mmax+1), np.int32)
+    lm2l = np.zeros(lm_max, np.int16)
+    lm2m = np.zeros(lm_max, np.int16)
+    k = 0
+    for m in range(mmin, mmax+1, minc):
         for l in range(m, lmax+1):
             idx[l, m] = k
             lm2l[k] = l
             lm2m[k] = m
-            k +=1
+            k += 1
 
     return idx, lm2l, lm2m
 
 def interp_one_field(field, rold, rnew, rfac=None):
     """
     This routine interpolates a complex input field from an old radial grid
-    to a new one. 
+    to a new one.
 
     :param field: the field to be interpolated
     :type field: numpy.ndarray
@@ -150,7 +149,7 @@ class MagicCheckpoint:
     >>> chk.xshells2magic('st0', 161, rscheme='cheb', cond_state='deltaT')
     """
 
-    def __init__(self, l_read=True, filename=None):
+    def __init__(self, l_read=True, filename=None, endian='l'):
         """
         :param l_read: a boolean to decide whether one reads a checkpoint or not
         :type l_read: bool
@@ -161,20 +160,30 @@ class MagicCheckpoint:
             if filename is None:
                 chks = scanDir('checkpoint*')
                 filename = chks[-1]
-            self.read(filename)
+            self.read(filename, endian=endian)
 
-    def read(self, filename):
+    def read(self, filename, endian='l'):
         """
-        This routine is used to read a checkpoint file. 
+        This routine is used to read a checkpoint file.
 
         :param filename: name of the checkpoint file
         :type filename: str
         """
+        if endian == 'B':
+            prefix = '>'
+        else:
+            prefix = ''
         file = open(filename, 'rb')
 
-        self.version = np.fromfile(file, dtype=np.int32, count=1)[0]
-        self.time = np.fromfile(file, dtype=np.float64, count=1)[0]
-        
+        fmt = '{}i4'.format(prefix)
+        self.version = np.fromfile(file, fmt, count=1)[0]
+        if abs(self.version) > 100:
+            print('File version is too large, reading error!')
+            print('Either wrong endian or record markers')
+            raise ValueError
+        fmt = '{}f8'.format(prefix)
+        self.time = np.fromfile(file, fmt, count=1)[0]
+
         # Time scheme
         self.tscheme_family = file.read(10).decode()
         nexp, nimp, nold = np.fromfile(file, dtype=np.int32, count=3)
@@ -183,19 +192,34 @@ class MagicCheckpoint:
         else:
             self.dt = np.fromfile(file, dtype=np.float64, count=1)[0]
         n_time_step = np.fromfile(file, dtype=np.int32, count=1)[0]
-        self.ra, self.pr, self.raxi, self.sc, self.prmag, self.ek, \
-                 self.radratio, self.sigma_ratio = \
-                 np.fromfile(file, dtype=np.float64, count=8)
+        if self.version <= 2:
+            self.ra, self.pr, self.raxi, self.sc, self.prmag, self.ek, \
+                     self.radratio, self.sigma_ratio = \
+                     np.fromfile(file, dtype=np.float64, count=8)
+            self.stef = 0.
+        else:
+            self.ra, self.pr, self.raxi, self.sc, self.prmag, self.ek, \
+                     self.stef, self.radratio, self.sigma_ratio = \
+                     np.fromfile(file, dtype=np.float64, count=9)
 
         # Truncation
-        self.n_r_max, self.n_theta_max, self.n_phi_tot, self.minc,\
+        self.n_r_max, self.n_theta_max, self.n_phi_tot, self.minc, \
                       self.nalias, self.n_r_ic_max = \
                       np.fromfile(file, dtype=np.int32, count=6)
-        self.l_max, self.m_max, self.lm_max = get_truncation(self.n_theta_max,
-                                                             self.nalias, self.minc)
+        if self.version > 3:
+            self.l_max, self.m_min, self.m_max = np.fromfile(file, dtype=np.int32,
+                                                             count=3)
+            self.lm_max = 0
+            for m in range(self.m_min, self.m_max+1, self.minc):
+                for l in range(m, self.l_max+1):
+                    self.lm_max += 1
+        else:
+            self.l_max, self.m_max, self.lm_max = get_truncation(self.n_theta_max,
+                                                                 self.nalias, self.minc)
+            self.m_min = 0
         # Define maps
         self.idx, self.lm2l, self.lm2m = get_map(self.lm_max, self.l_max,
-                                                 self.m_max, self.minc)
+                                                 self.m_min, self.m_max, self.minc)
 
         # Radial scheme
         self.rscheme_version = file.read(72).decode()
@@ -214,16 +238,22 @@ class MagicCheckpoint:
         if self.tscheme_family.startswith('MULTISTEP'):
             domega_ic = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
             domega_ma = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
-            lotorque_ic = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
-            lotorque_ma = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
+            if self.version < 5:
+                lotorque_ic = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
+                lotorque_ma = np.fromfile(file, dtype=np.float64, count=(nexp+nimp+nold-3))
 
         om = np.fromfile(file, dtype=np.float64, count=12)
         self.omega_ic = om[0]
         self.omega_ma = om[6]
 
         # Logicals
-        self.l_heat, self.l_chem, self.l_mag, self.l_press, self.l_cond_ic = \
-            np.fromfile(file, dtype=np.int32, count=5)
+        if self.version <= 2:
+            self.l_heat, self.l_chem, self.l_mag, self.l_press, self.l_cond_ic = \
+                np.fromfile(file, dtype=np.int32, count=5)
+            self.l_phase = False
+        else:
+            self.l_heat, self.l_chem, self.l_phase, self.l_mag, self.l_press, \
+                self.l_cond_ic = np.fromfile(file, dtype=np.int32, count=6)
 
         # Fields
         self.wpol = np.fromfile(file, dtype=np.complex128,
@@ -259,6 +289,13 @@ class MagicCheckpoint:
             self.xi = np.fromfile(file, dtype=np.complex128,
                                   count=self.n_r_max*self.lm_max)
             self.xi = self.xi.reshape((self.n_r_max, self.lm_max))
+            if self.tscheme_family.startswith('MULTISTEP'):
+                tmp = np.fromfile(file, dtype=np.complex128,
+                                  count=self.lm_max*self.n_r_max*(nexp+nimp+nold-3))
+        if self.l_phase:
+            self.phase = np.fromfile(file, dtype=np.complex128,
+                                     count=self.n_r_max*self.lm_max)
+            self.phase = self.phase.reshape((self.n_r_max, self.lm_max))
             if self.tscheme_family.startswith('MULTISTEP'):
                 tmp = np.fromfile(file, dtype=np.complex128,
                                   count=self.lm_max*self.n_r_max*(nexp+nimp+nold-3))
@@ -309,7 +346,7 @@ class MagicCheckpoint:
         file = open(filename, 'wb')
 
         # Header
-        version = np.array([2], np.int32)
+        version = np.array([5], np.int32)
         version.tofile(file)
         time = np.array([self.time], np.float64)
         time.tofile(file)
@@ -320,7 +357,10 @@ class MagicCheckpoint:
         par = np.array([1, 1, 1], np.int32)
         par.tofile(file)
         if hasattr(self, 'dt'):
-            dt = np.array([self.dt], np.float64)
+            if isinstance(self.dt, np.ndarray):
+                dt = np.array([self.dt[0]], np.float64)
+            else:
+                dt = np.array([self.dt], np.float64)
         else:
             dt = np.array([1.0e-6], np.float64)
         dt.tofile(file)
@@ -330,15 +370,20 @@ class MagicCheckpoint:
         # Control parameters
         if hasattr(self, 'ra') and hasattr(self, 'sc') and hasattr(self, 'prmag'):
             x = np.array([self.ra, self.pr, self.raxi, self.sc, self.prmag,
-                          self.ek, self.radratio, self.sigma_ratio], np.float64)
+                          self.ek, self.stef, self.radratio, self.sigma_ratio],
+                         np.float64)
         else:
-            x = np.array([1e5, 1.0,  0.0, 1.0, 5.0, 1.0e-3, self.radratio, 1.0],
+            x = np.array([1e5, 1.0,  0.0, 1.0, 5.0, 1.0e-3, 0., self.radratio, 1.0],
                          np.float64)
         x.tofile(file)
 
         # Truncation
         x = np.array([self.n_r_max, self.n_theta_max,  self.n_phi_tot, self.minc,
                       self.nalias, self.n_r_ic_max], np.int32)
+        x.tofile(file)
+        if not hasattr(self, 'm_min'):
+            self.m_min = 0
+        x = np.array([self.l_max, self.m_min, self.m_max], np.int32)
         x.tofile(file)
 
         # Radial scheme
@@ -364,7 +409,10 @@ class MagicCheckpoint:
         dumm.tofile(file)
 
         # Logicals
-        flags = np.array([self.l_heat, self.l_chem, self.l_mag, False,
+        if not hasattr(self, 'l_phase'):
+            self.l_phase = False
+
+        flags = np.array([self.l_heat, self.l_chem, self.l_phase, self.l_mag, False,
                           self.l_cond_ic], np.int32)
         flags.tofile(file)
 
@@ -375,6 +423,8 @@ class MagicCheckpoint:
             self.entropy.tofile(file)
         if self.l_chem:
             self.xi.tofile(file)
+        if self.l_phase:
+            self.phase.tofile(file)
         if self.l_mag:
             self.bpol.tofile(file)
             self.btor.tofile(file)
@@ -396,8 +446,6 @@ class MagicCheckpoint:
         :param fd_ratio: ratio of smallest to largest grid spacing
         :type fd_ratio: float
         """
-        self.fd_ratio = 0.1
-        self.fd_stretch = 0.3
         self.rscheme_version = 'fd'+'{:>70s}'.format('')
         self.fd_stretch = fd_stretch
         self.fd_ratio = fd_ratio
@@ -414,6 +462,9 @@ class MagicCheckpoint:
         if self.l_chem:
             tmp = interp_one_field(self.xi, self.radius, rnew)
             self.xi = tmp
+        if self.l_phase:
+            tmp = interp_one_field(self.phase, self.radius, rnew)
+            self.phase = tmp
         if self.l_mag:
             tmp = interp_one_field(self.bpol, self.radius, rnew)
             self.bpol = tmp
@@ -449,6 +500,9 @@ class MagicCheckpoint:
         if self.l_chem:
             tmp = interp_one_field(self.xi, self.radius, rnew)
             self.xi = tmp
+        if self.l_phase:
+            tmp = interp_one_field(self.phase, self.radius, rnew)
+            self.phase = tmp
         if self.l_mag:
             tmp = interp_one_field(self.bpol, self.radius, rnew)
             self.bpol = tmp
@@ -493,6 +547,7 @@ class MagicCheckpoint:
             self.l_mag = True
         self.l_press = False
         self.l_chem = False
+        self.l_phase = False
         # Right now don't know where it is stored
         self.l_cond_ic = False
 
@@ -523,7 +578,7 @@ class MagicCheckpoint:
 
         # When nalias=60 ntheta=lmax: trick to have lmax in MagIC's header
         self.nalias = 60
-        self.n_theta_max = self.l_max 
+        self.n_theta_max = self.l_max
         self.n_phi_tot = self.l_max
         self.n_r_ic_max = 1
 
@@ -544,7 +599,8 @@ class MagicCheckpoint:
             self.entropy = interp_one_field(field_xsh, rr_xsh, self.radius)
 
             if cond_state == 'deltaT':
-                temp0 = -ri**2/(ri**2+ro**2)
+                #temp0 = -ri**2/(ri**2+ro**2)
+                temp0 = 0.
                 tcond = ro*ri/(ro-ri)/self.radius+temp0-ri/(ro-ri)
             elif cond_state == 'mixed':
                 fi = 0.75
@@ -591,9 +647,9 @@ class MagicCheckpoint:
 
         self.n_r_max = gr.n_r_max
         self.n_theta_max = gr.n_theta_max
-        self.n_phi_tot = gr.n_phi_tot
         self.minc = gr.minc
-        self.n_r_ic_max = gr.nr_ic+2
+        self.n_phi_tot = gr.n_phi_max*gr.minc+1
+        self.n_r_ic_max = gr.n_r_ic_max+1
         self.nalias = 20
 
         # Spectral truncation
@@ -601,12 +657,12 @@ class MagicCheckpoint:
                                                              self.nalias, self.minc)
         # Define maps
         self.idx, self.lm2l, self.lm2m = get_map(self.lm_max, self.l_max,
-                                                 self.m_max, self.minc)
+                                                 0, self.m_max, self.minc)
         self.radius = gr.radius.astype(np.float64)
         ri = self.radius[-1]
         ro = self.radius[0]
         self.radratio = ri/ro
-        if gr.radial_scheme == 'CHEB':
+        if not hasattr(gr, 'radial_scheme') or gr.radial_scheme == 'CHEB':
             self.rscheme_version = 'cheb'+'{:>68s}'.format('')
             self.n_cheb_max = self.n_r_max-2
             if gr.l_newmap == 'F':
@@ -621,22 +677,48 @@ class MagicCheckpoint:
             self.fd_ratio = gr.fd_ratio
 
         # Flags
+        self.ek = gr.ek
+        self.radratio = gr.radratio
         if gr.mode in [2, 3, 7, 8, 9, 10] or gr.ra == 0.:
             self.l_heat = False
+            self.ra = 0.
+            self.pr = 0.
         else:
             self.l_heat = True
-        if gr.raxi > 0. or gr.raxi < 0.:
-            self.l_chem = True
-        else:
+            self.ra = gr.ra
+            self.pr = gr.pr
+        if not hasattr(gr, 'raxi'):
             self.l_chem = False
+            self.raxi = 0.
+            self.sc = 0.
+        else:
+            if gr.raxi > 0. or gr.raxi < 0.:
+                self.l_chem = True
+            else:
+                self.l_chem = False
+            self.raxi = gr.raxi
+            self.sc = gr.sc
         if gr.mode in [0, 2, 3, 6, 8, 9]:
             self.l_mag = True
+            self.prmag = 0.
         else:
             self.l_mag = False
+            self.prmag = gr.prmag
         if gr.sigma_ratio == 0.:
             self.l_cond_ic = False
+            self.sigma_ratio = 0.
         else:
             self.l_cond_ic = True
+            self.sigma_ratio = gr.sigma
+        if not hasattr(gr, 'stef'):
+            self.l_phase = False
+            self.stef = 0.
+        else:
+            if gr.stef > 0.:
+                self.l_phase = True
+            else:
+                self.l_phase = False
+            self.stef = gr.stef
         self.l_press = False
 
         if self.l_cond_ic:
@@ -650,7 +732,7 @@ class MagicCheckpoint:
         self.omega_ic = 0.
         self.omega_ma = 0.
 
-        sh = SpectralTransforms(l_max=self.l_max, lm_max=self.lm_max, minc=self.minc,
+        sh = SpectralTransforms(l_max=self.l_max, minc=self.minc,
                                 n_theta_max=self.n_theta_max)
 
         # Calculate and store the poloidal potential using vr
@@ -663,16 +745,11 @@ class MagicCheckpoint:
         # Calculate the toroidal potential using wr
         self.ztor = np.zeros_like(self.wpol)
 
-        th3D = np.zeros_like(gr.vr)
-        rr3D = np.zeros_like(th3D)
-        for i in range(self.n_theta_max):
-            th3D[:, i, :] = gr.colatitude[i]
-        for i in range(self.n_r_max):
-            rr3D[:, :, i] = self.radius[i]
-        s3D = rr3D*np.sin(th3D)
-        omr = 1./s3D*(thetaderavg(np.sin(th3D)*gr.vphi, order=4) -
+        th3D = gr.colatitude[None, :, None]
+        s3D = self.radius[None, None, :]*np.sin(gr.colatitude[None, :, None])
+        omr = 1./s3D*(thetaderavg(np.sin(th3D)*gr.vphi, colat=gr.colatitude, order=4) -
                       phideravg(gr.vtheta, minc=self.minc))
- 
+
         for i in range(self.n_r_max):
             om = sh.spat_spec(omr[:, :, i])
             self.ztor[i, 1:] = om[1:]/(sh.ell[1:]*(sh.ell[1:]+1)) * \
@@ -692,6 +769,13 @@ class MagicCheckpoint:
                 p = sh.spat_spec(gr.xi[:, :, i])
                 self.xi[i, :] = p[:]
 
+        # Calculate the phase field
+        if self.l_phase:
+            self.phase = np.zeros_like(self.wpol)
+            for i in range(self.n_r_max):
+                p = sh.spat_spec(gr.phase[:, :, i])
+                self.phase[i, :] = p[:]
+
         # Calculate the magnetic field
         if self.l_mag:
             self.bpol = np.zeros_like(self.wpol)
@@ -701,7 +785,7 @@ class MagicCheckpoint:
                                    self.radius[i]**2
 
             self.btor = np.zeros_like(self.ztor)
-            jr = 1./s3D*(thetaderavg(np.sin(th3D)*gr.Bphi, order=4) -
+            jr = 1./s3D*(thetaderavg(np.sin(th3D)*gr.Bphi, colat=gr.colatitude, order=4) -
                          phideravg(gr.Btheta, minc=self.minc))
 
             for i in range(self.n_r_max):
@@ -722,7 +806,7 @@ class MagicCheckpoint:
                     rr = self.radius_ic[i-1]
                     rdep[1:] = (self.radius_ic[i-1]/ri)**(sh.ell[1:]+1)
                 self.bpol_ic[i, 1:] = vr[1:]/(sh.ell[1:]*(sh.ell[1:]+1))*rr**2
-                # Not stable: 
+                # Not stable:
                 #if self.radius_ic[i] >= 0.01:
                 #    mask = ( self.lm2l <= 2 ) * ( self.lm2m <= 2)
                 #    self.bpol_ic[i, mask] /= rdep[mask]
@@ -730,16 +814,12 @@ class MagicCheckpoint:
             # Calculate the toroidal potential using jr
             self.btor_ic = np.zeros_like(self.bpol_ic)
 
-            th3D = np.zeros_like(gr.Br_ic)
-            rr3D = np.zeros_like(th3D)
-            for i in range(self.n_theta_max):
-                th3D[:, i, :] = gr.colatitude[i]
-            for i in range(self.n_r_ic_max-1):
-                rr3D[:, :, i] = self.radius_ic[i]
-            rr3D[:, :, -1] = 1e-4
-            s3D = rr3D*np.sin(th3D)
+            th3D = gr.colatitude[None, :, None]
+            s3D = self.radius_ic[None, None, :]*np.sin(gr.colatitude[None, :, None])
+            s3D[:, :, -1] = 1e-4
             jr_ic = np.zeros_like(th3D)
-            jr_ic = 1./s3D*(thetaderavg(np.sin(th3D)*gr.Bphi_ic, order=4) -
+            jr_ic = 1./s3D*(thetaderavg(np.sin(th3D)*gr.Bphi_ic,
+                                        colat=gr.colatitude, order=4) -
                             phideravg(gr.Btheta_ic, minc=self.minc))
 
             for i in range(self.n_r_ic_max):

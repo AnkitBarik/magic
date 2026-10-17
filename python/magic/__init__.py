@@ -1,6 +1,7 @@
 from .setup import buildSo
 from .log import *
-from .series import MagicTs, AvgField
+from .series import MagicTs
+from .averages import AvgField, AvgStack
 from .radial import MagicRadial
 from .graph import *
 from .surf import *
@@ -16,12 +17,12 @@ from .thHeat import *
 from .coeff import *
 from .radialSpectra import *
 from .checkpoint import *
+from .libmelt import *
 if buildSo:
     try:
         from .potExtra import *
         from .graph2vtk import *
         #from .graph2rst import *
-        from .movie3D import *
         from .spectralTransforms import *
         from .potential import *
     except ImportError as e:

@@ -168,6 +168,23 @@ The centrifugal acceleration can be computed for a polytropic background
 
   ..
 
+Phase field
+------------
+
+* **stef** (default :f:var:`stef=1.0 <stef>` is a real. This is the Stefan number (used when the phase field is plugged in). It is expressed by the ratio of the latent heat per unit mass associated with the solid-liquid transition and the specific heat:
+
+  .. math::
+     St = \frac{\mathcal{L}}{c_p\Delta T}
+
+* **tmelt** (default :f:var:`tmelt=0.0 <tmelt>`) is a real. This is the dimensionless melting temperature :math:`T_M` which enters :eq:`eqPhaseField`.
+
+* **epsPhase** (default :f:var:`epsPhase=0.01 <epsphase>`) is a real. This is the dimensionless interface thickness between the solid and the liquid phase (sometimes known as the Cahn number). This corresponds to :math:`\epsilon` in :eq:`eqPhaseField`.
+
+* **phaseDiffFac** (default :f:var:`phaseDiffFac=1.0 <phasedifffac>`) is a real. This is a coefficient that goes in front of the diffusion term in the phase field equation. This corresponds to :math:`a` in :eq:`eqPhaseField`.
+
+* **penaltyFac** (default :f:var:`penaltyFac=1.0 <penaltyfac>`) is a real. This is coefficient :math:`\tau_p` used for the penalisation of the velocity field in the solid phase. The smaller the coefficient, the stronger the penalisation. Since this is a nonlinear term, it is handled explicitly and the time step size should be decreased with the square of :f:var:`penaltyfac`.
+
+
 Transport properties
 --------------------
 
@@ -242,6 +259,12 @@ Thermal diffusivity
   +----------------+----------------------------------------------------------------------------+
   | ``nVarDiff=4`` | polynomial-fit to an interior model of the Earth liquid core               |
   +----------------+----------------------------------------------------------------------------+
+  | ``nVarDiff=5`` | ...                                                                        |
+  +----------------+----------------------------------------------------------------------------+
+  | ``nVarDiff=6`` | tanh-like jump increase of thermal diffusivity in a stably-stratified-layer|
+  +----------------+----------------------------------------------------------------------------+
+  | ``nVarDiff=7`` | tanh-like jump increase of thermal diffusivity in a bottom stable layer    |
+  +----------------+----------------------------------------------------------------------------+
 
 .. _varnVarVisc:
 
@@ -260,6 +283,10 @@ Viscosity
   |                |    .. math:: \nu=\left(\frac{\tilde{\rho}(r)}                           |
   |                |              {\tilde{\rho}_i}\right)^{\alpha}                           |
   +----------------+-------------------------------------------------------------------------+
+  | ``nVarVisc=3`` | tanh-like increase of kinematic viscosity in a stably-stratified layer  |
+  +----------------+-------------------------------------------------------------------------+
+  | ``nVarVisc=4`` | tanh-like increase of kinematic viscosity in a bottom stable layer      |
+  +----------------+-------------------------------------------------------------------------+
 
   where :math:`\alpha` is an exponent set by the namelist input variable ``difExp``.
 
@@ -274,8 +301,6 @@ Anelastic liquid equations
 
   .. math:: \epsilon \simeq \frac{\Delta T}{T} \simeq \frac{\Delta s}{c_p}
 
-* **cmbHflux** (default :f:var:`cmbHflux=0.0 <cmbhflux>`) is a real. This is the CMB heat flux that enters the calculation of the reference state of the liquid core of the Earth, when the anelastic liquid approximation is employed.
-
 * **slopeStrat** (default :f:var:`slopeStrat=20.0 <slopestrat>`) is a real. This parameter controls the transition between the convective layer and the stably-stratified layer below the CMB.
 
 
@@ -289,15 +314,19 @@ Thermal boundary conditions
 
 * **ktops** (default :f:var:`ktops=1 <ktops>`) is an  integer to specify the outer boundary entropy (or temperature) boundary condition:
 
-  +-------------+-------------------------------------------------------------------------------------+
-  | ``ktops=1`` | Fixed entropy at outer boundary: :math:`s(r_o)=s_{top}`                             |
-  +-------------+-------------------------------------------------------------------------------------+
-  | ``ktops=2`` | Fixed entropy flux at outer boundary: :math:`\partial s(r_o)/\partial r = q_t`      |
-  +-------------+-------------------------------------------------------------------------------------+
-  | ``ktops=3`` | Fixed temperature at outer boundary: :math:`T(r_o)=T_{top}`                         |
-  +-------------+-------------------------------------------------------------------------------------+
-  | ``ktops=4`` | Fixed temperature flux at outer boundary: :math:`\partial T(r_o)/\partial r = q_t`  |
-  +-------------+-------------------------------------------------------------------------------------+
+  +-------------+-----------------------------------------------------------------------+
+  | ``ktops=1`` | Fixed temperature (Boussinesq) or entropy (anelastic)                 |
+  |             | at outer boundary: :math:`s(r_o)=s_{top}`                             |
+  +-------------+-----------------------------------------------------------------------+
+  | ``ktops=2`` | Fixed temperature gradient (Boussinesq) or entropy gradient at outer  |
+  |             | boundary: :math:`\partial s(r_o)/\partial r = q_t`                    |
+  +-------------+-----------------------------------------------------------------------+
+  | ``ktops=3`` | Only use it in anelastic models: fixed temperature at outer boundary: |
+  |             | :math:`T(r_o)=T_{top}`                                                |
+  +-------------+-----------------------------------------------------------------------+
+  | ``ktops=4`` | Only use it in anelastic models: fixed temperature gradient at outer  |
+  |             | boundary: :math:`\partial T(r_o)/\partial r = q_t`                    |
+  +-------------+-----------------------------------------------------------------------+
 
 * **kbots** (default :f:var:`ktops=1 <kbots>`) is an  integer to specify the inner boundary entropy (or temperature) boundary condition.
 
@@ -339,11 +368,12 @@ Boundary conditions for chemical composition
 
 * **ktopxi** (default :f:var:`ktopxi=1 <ktopxi>`) is an  integer to specify the outer boundary chemical composition boundary condition:
 
-  +--------------+-------------------------------------------------------------------------------------+
-  | ``ktopxi=1`` | Fixed composition at outer boundary: :math:`\xi(r_o)=\xi_{top}`                     |
-  +--------------+-------------------------------------------------------------------------------------+
-  | ``ktopxi=2`` | Fixed composition flux at outer boundary: :math:`\partial \xi(r_o)/\partial r = q_t`|
-  +--------------+-------------------------------------------------------------------------------------+
+  +--------------+--------------------------------------------------------------------+
+  | ``ktopxi=1`` | Fixed composition at outer boundary: :math:`\xi(r_o)=\xi_{top}`    |
+  +--------------+--------------------------------------------------------------------+
+  | ``ktopxi=2`` | Fixed composition gradient at outer boundary:                      |
+  |              | :math:`\partial \xi(r_o)/\partial r = q_t`                         |
+  +--------------+--------------------------------------------------------------------+
 
 * **kbotxi** (default :f:var:`ktopxi=1 <kbotxi>`) is an  integer to specify the inner boundary chemical composition boundary condition.
 
@@ -357,7 +387,7 @@ Boundary conditions for chemical composition
 
   4. Imaginary amplitude (:math:`\sin` contribution)
 
-  For example, if the boundary condition should be a combination of an :math:`(\ell=1,m=0)` sherical harmonic with the amplitude 1 and an :math:`(\ell=2,m=1)` spherical harmonic with the amplitude (0.5,0.5) the respective namelist entry could read:
+  For example, if the boundary condition should be a combination of an :math:`(\ell=1,m=0)` spherical harmonic with the amplitude 1 and an :math:`(\ell=2,m=1)` spherical harmonic with the amplitude (0.5,0.5) the respective namelist entry could read:
 
 
   .. code-block:: fortran
@@ -379,6 +409,20 @@ Boundary conditions for chemical composition
   4. Angular width (input has to be given in degrees), stored in array :f:var:`widthXi(20) <widthxi>`.
 
 
+Boundary conditions for phase field
++++++++++++++++++++++++++++++++++++
+
+.. _secPhaseFieldBcs:
+
+* **ktopphi** (default :f:var:`ktopphi=1 <ktopphi>`) is an  integer to specify the boundary condition of the phase field at the outer boundary.
+
+  +---------------+-------------------------------------------------------------------------------------+
+  | ``ktopphi=1`` | Fixed phase field at outer boundary: :math:`\phi(r_o)=\phi_{top}`                   |
+  +---------------+-------------------------------------------------------------------------------------+
+  | ``ktopphi=2`` | Fixed phase field gradient : :math:`\partial \phi(r_o)/\partial r = 0`              |
+  +---------------+-------------------------------------------------------------------------------------+
+
+* **kbotphi** (default :f:var:`kbotphi=1 <kbotphi>`) is an  integer to specify the boundary condition of the phase field at the inner boundary.
 
 .. _secMechanicalBcs:
 
@@ -420,6 +464,11 @@ Magnetic boundary conditions
   |             |       \frac{\partial g_{\ell m}}{\partial r}+\frac{\ell}{r}\,g_{\ell m}=0,\quad |
   |             |       \frac{\partial h_{\ell m}}{\partial r}=0                                  |
   +-------------+---------------------------------------------------------------------------------+
+  | ``ktopb=2`` | Perfect condutor:                                                               |
+  |             |    .. math::                                                                    |
+  |             |       g_{\ell m} = \frac{\partial^2 g_{\ell m}}{\partial r^2}=0,\quad           |
+  |             |       \frac{\partial h_{\ell m}}{\partial r}=0                                  |
+  +-------------+---------------------------------------------------------------------------------+
   | ``ktopb=3`` | Finitely conducting mantle                                                      |
   +-------------+---------------------------------------------------------------------------------+
   | ``ktopb=4`` | Pseudo-vacuum outer boundary:                                                   |
@@ -437,7 +486,7 @@ Magnetic boundary conditions
   +-------------+---------------------------------------------------------------------------------+
   | ``kbotb=2`` | Perfectly-conducting inner core:                                                |
   |             |    .. math::                                                                    |
-  |             |       g_{\ell m} = \frac{\partial g_{\ell m}}{\partial r}=0,\quad               |
+  |             |       g_{\ell m} = \frac{\partial^2 g_{\ell m}}{\partial r^2}=0,\quad           |
   |             |       \frac{\partial h_{\ell m}}{\partial r}=0                                  |
   +-------------+---------------------------------------------------------------------------------+
   | ``kbotb=3`` | Finitely conducting inner core                                                  |

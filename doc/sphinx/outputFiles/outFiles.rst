@@ -31,6 +31,7 @@ and the structure of the different type of output files:
 
          * Angular momentum balance: :ref:`AM.TAG <secAMFile>`,
 	 * Heat transport: :ref:`heat.TAG <secHeatFile>`,
+	 * Diagnostics for double-diffusive convection: :ref:`double_diff.TAG <secDoubleDiffFile>`,
 	 * Helicity: :ref:`helicity.TAG <secHelicityFile>`,
 	 * Power budget: :ref:`power.TAG <secpowerFile>` and :ref:`dtE.TAG <secdtEFile>`,
 	 * Square velocities: :ref:`u_square.TAG <secu_squareFile>`,
@@ -83,7 +84,7 @@ and the structure of the different type of output files:
    9. Checkpoints outputs that will allow the code to restart. Those files are named
       **restart files**: :ref:`checkpoint_end.TAG <secRestartFile>`.
 
-   10. **Time-evolution of the poloidal and toroidal coefficients** at diffent depths:
+   10. **Time-evolution of the poloidal and toroidal coefficients** at different depths:
 
          * Time evolution of the poloidal magnetic field at the CMB: :ref:`B_coeff_cmb.TAG <secCmbFile>`,
 	 * Time evolution of the potentials at several depths: :ref:`[V|T|B]_coeff_r#.TAG <secCoeffrFiles>`
@@ -91,8 +92,7 @@ and the structure of the different type of output files:
    11. **Additional specific outputs**:
 
          * Torsional oscillations (see :ref:`here <secTOoutputFiles>`),
-	 * Potential files: :ref:`V_lmr_#.TAG <secVpotFile>`, :ref:`B_lmr_#.TAG <secBpotFile>` and :ref:`T_lmr_#.TAG <secTpotFile>`,
-	 * Potential vorticity files: ``PVZ.TAG`` and ``Vcy.TAG``,
+	 * Potential files: :ref:`V_lmr_#.TAG <secPotFiles>`, :ref:`B_lmr_#.TAG <secPotFiles>` and :ref:`T_lmr_#.TAG <secPotFiles>`,
 	 * Magnetic spectra for various radii: :ref:`rB[r|p]Spec.TAG <secrBspecFiles>`.
 
 

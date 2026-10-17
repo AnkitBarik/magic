@@ -1,0 +1,49 @@
+&grid
+ n_r_max     =33,
+ n_cheb_max  =33,
+ l_max       =32,
+ m_max       =6,
+ m_min       =3,
+ minc        =1,
+/
+&control
+ mode        =5,
+ tag         ="test",
+ n_time_steps=5000,
+ courfac     =2.5D0,
+ alffac      =1.0D0,
+ dtmax       =1.0D-4,
+ alpha       =0.5D0,
+ runHours    =00,
+ runMinutes  =30,
+/
+&phys_param
+ ra          =5.6D4,
+ ek          =1.0D-3,
+ pr          =1.0D0,
+ radratio    =0.35D0,
+ ktops       =1,
+ kbots       =1,
+ ktopv       =2,
+ kbotv       =2,
+/
+&start_field
+ l_start_file=.false.,
+ start_file  ="None",
+ init_s1     =0404,
+ amp_s1      =1.0d-3,
+/
+&output_control
+ n_log_step  =100,
+ n_graphs    =0,
+ n_rsts      =0,
+ n_stores    =0,
+ runid       ="Onset of convection",
+/
+&mantle 
+ nRotMa      =0
+/
+&inner_core 
+ sigma_ratio =0.d0,
+ nRotIC      =0,
+/

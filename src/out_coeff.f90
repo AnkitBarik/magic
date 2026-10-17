@@ -1,24 +1,26 @@
 module out_coeff
    !
-   ! This module contains the subroutines that calculate the Bcmb files
-   ! , the [B|V|T]_coeff_r files and the [B|V|T]_lmr files
+   ! This module contains the subroutines that calculate the Bcmb files,
+   ! the [B|V|T]_coeff_r files and the [B|V|T]_lmr files
    !
-  
+
    use precision_mod
    use parallel_mod
    use mem_alloc, only: bytes_allocated
    use logic, only: l_r_field, l_cmb_field, l_save_out, l_average, &
-       &            l_cond_ic
+       &            l_cond_ic, l_r_fieldT, l_r_fieldXi, l_mag
    use radial_functions, only: r, rho0
    use radial_data, only: nRstart, nRstop
    use physical_parameters, only: ra, ek, pr, prmag, radratio, sigma_ratio, &
        &                          raxi, sc
    use num_param, only: tScale
    use blocking, only: lm2, llm, ulm
-   use truncation, only: lm_max, l_max, minc, n_r_max, n_r_ic_max, minc
+   use truncation, only: lm_max, l_max, minc, n_r_max, n_r_ic_max, minc,&
+       &                 m_min, m_max
    use communications, only: gather_from_lo_to_rank0, gather_all_from_lo_to_rank0,&
        &                     gt_IC, gt_OC
-   use output_data, only: tag
+   use output_data, only: tag, n_coeff_r, n_r_array, n_r_step, l_max_r, &
+       &                  n_coeff_r_max, l_max_pot
    use constants, only: two, half
 
    implicit none
@@ -26,50 +28,153 @@ module out_coeff
    private
 
    integer :: fileHandle
+   integer, allocatable :: n_v_r_sets(:), n_b_r_sets(:)
+   integer, allocatable :: n_T_r_sets(:), n_Xi_r_sets(:)
+   integer, allocatable :: n_v_r_file(:)
+   integer, allocatable :: n_t_r_file(:)
+   integer, allocatable :: n_xi_r_file(:)
+   integer, allocatable:: n_b_r_file(:)
+   character(len=72), allocatable :: v_r_file(:)
+   character(len=72), allocatable :: t_r_file(:)
+   character(len=72), allocatable :: xi_r_file(:)
+   character(len=72), allocatable :: b_r_file(:)
 
-   complex(cp), allocatable :: work(:) ! work array for r_field
 
-   public :: write_Bcmb, write_coeff_r, initialize_coeffs, finalize_coeffs, &
-   &         write_Pot
+   public :: write_Bcmb, write_coeffs, write_Pot, initialize_coeff, finalize_coeff
 #ifdef WITH_MPI
    public :: write_Pot_mpi
 #endif
 
 contains
 
-   subroutine initialize_coeffs()
+   subroutine initialize_coeff
 
-      if ( l_r_field .or. l_cmb_field .or. l_average ) then
-         allocate ( work(lm_max) )
-         bytes_allocated = bytes_allocated+lm_max*SIZEOF_DEF_COMPLEX
+      integer :: n
+      character(len=72) :: string
+
+      !-- Coeffs at radial levels:
+      allocate ( n_coeff_r(n_coeff_r_max))
+      allocate ( n_v_r_file(n_coeff_r_max), v_r_file(n_coeff_r_max) )
+      allocate ( n_v_r_sets(n_coeff_r_max) )
+      n_v_r_sets=0
+
+      if ( l_mag ) then
+         allocate ( n_b_r_file(n_coeff_r_max), b_r_file(n_coeff_r_max) )
+         allocate ( n_b_r_sets(n_coeff_r_max) )
+         n_b_r_sets=0
       end if
 
-   end subroutine initialize_coeffs
-!-------------------------------------------------------------------------------
-   subroutine finalize_coeffs()
+      do n=1,n_coeff_r_max
+         write(string,*) n
+         v_r_file(n)='V_coeff_r'//trim(adjustl(string))//'.'//tag
+         if ( l_mag ) then
+            B_r_file(n)='B_coeff_r'//trim(adjustl(string))//'.'//tag
+         end if
+      end do
 
-      if ( l_r_field .or. l_cmb_field .or. l_average ) then
-         deallocate( work )
+      if ( l_r_fieldT ) then
+         allocate ( n_t_r_file(n_coeff_r_max), t_r_file(n_coeff_r_max) )
+         allocate ( n_t_r_sets(n_coeff_r_max) )
+         n_T_r_sets=0
+
+         do n=1,n_coeff_r_max
+            write(string,*) n
+            t_r_file(n)='T_coeff_r'//trim(adjustl(string))//'.'//tag
+         end do
       end if
 
-   end subroutine finalize_coeffs
-!-------------------------------------------------------------------------------
+      if ( l_r_fieldXi ) then
+         allocate ( n_xi_r_file(n_coeff_r_max), xi_r_file(n_coeff_r_max) )
+         allocate ( n_xi_r_sets(n_coeff_r_max) )
+         n_Xi_r_sets=0
+
+         do n=1,n_coeff_r_max
+            write(string,*) n
+            xi_r_file(n)='Xi_coeff_r'//trim(adjustl(string))//'.'//tag
+         end do
+      end if
+
+      if ( count(n_r_array>0)> 0 ) then
+         n_coeff_r=n_r_array(1:n_coeff_r_max)
+      else
+         n_r_step=max(n_r_step,1)
+         do n=1,n_coeff_r_max
+            n_coeff_r(n)=n*n_r_step  ! used every n_r_step point !
+         end do
+      end if
+
+      if ( rank == 0 .and. ( .not. l_save_out ) ) then
+
+         if ( l_r_field ) then
+            do n=1,n_coeff_r_max
+               open(newunit=n_v_r_file(n), file=v_r_file(n), &
+               &    status='new', form='unformatted')
+               if ( l_mag ) then
+                  open(newunit=n_b_r_file(n), file=b_r_file(n), &
+                  &    status='new', form='unformatted')
+               end if
+            end do
+         end if
+         if ( l_r_fieldT ) then
+            do n=1,n_coeff_r_max
+               open(newunit=n_t_r_file(n), file=t_r_file(n), &
+               &    status='new', form='unformatted')
+            end do
+         end if
+         if ( l_r_fieldXi ) then
+            do n=1,n_coeff_r_max
+               open(newunit=n_xi_r_file(n), file=xi_r_file(n), &
+               &    status='new', form='unformatted')
+            end do
+         end if
+
+      end if
+
+   end subroutine initialize_coeff
+!----------------------------------------------------------------------
+   subroutine finalize_coeff
+
+      integer :: n
+
+      if ( rank == 0 .and. ( .not. l_save_out ) ) then
+         if ( l_r_field ) then
+            do n=1,n_coeff_r_max
+               close(n_v_r_file(n))
+               if ( l_mag ) then
+                  close(n_b_r_file(n))
+               end if
+            end do
+         end if
+
+         if ( l_r_fieldT ) then
+            do n=1,n_coeff_r_max
+               close(n_t_r_file(n))
+            end do
+         end if
+
+         if ( l_r_fieldXi ) then
+            do n=1,n_coeff_r_max
+               close(n_xi_r_file(n))
+            end do
+         end if
+      end if
+
+      deallocate ( n_coeff_r, n_v_r_file, v_r_file, n_v_r_sets )
+      if ( l_mag ) deallocate ( n_b_r_file, b_r_file, n_b_r_sets )
+      if ( l_r_fieldT ) deallocate ( n_t_r_file, t_r_file, n_t_r_sets )
+      if ( l_r_fieldXi ) deallocate ( n_xi_r_file, xi_r_file, n_xi_r_sets )
+
+   end subroutine finalize_coeff
+!----------------------------------------------------------------------
    subroutine write_Bcmb(time,b_LMloc,l_max_cmb,n_cmb_sets,cmb_file,n_cmb_file)
       !
       ! Each call of this subroutine writes time and the poloidal magnetic
-      ! potential coefficients b at the CMB up to degree and order        
-      ! l_max_cmb at the end of output file $cmb_file.                    
-      ! The parameters l_max_cmb, minc and the number of stored coeffs.  
-      ! are written into the first line of $cmb_file.                     
-      ! Each further set contains:                                        
-      !    
-      !     .. code-block:: fortran
+      ! potential coefficients b at the CMB up to degree and order l_max_cmb
+      ! at the end of output file cmb_file. The parameters l_max_cmb, minc and
+      ! the number of stored coeffs are written into the header of cmb_file.
+      ! Each further set contains:
       !
-      !                    time,
-      !                    real(b(l=0,m=0)),imag(b(l=0,m=0)),                  
-      !                    real(b(l=1,m=0)),imag(b(l=1,m=0)),    
-      !                                                                   
-      ! Real and imaginary part of b(*) for all orders m<=l are written   
+      ! Real and imaginary part of b(*) for all orders m<=l are written
       ! for a specific degree l, then for the degrees l+1, l+2, l_max_cmb.
       !
 
@@ -91,9 +196,9 @@ contains
       integer :: m_max_cmb      ! Max order of output
       integer :: lm_max_cmb     ! Max no of combinations l,m for output
       integer :: n_data         ! No of output data
-      integer :: n_r_cmb        ! Position of cmb-radius on grid
 
-      real(cp), allocatable ::  out(:) ! Output array
+      complex(cp) :: work(lm_max)
+      real(cp), allocatable ::  output(:) ! Output array
 
       call gather_from_lo_to_rank0(b_LMloc, work)
 
@@ -102,38 +207,35 @@ contains
          !--- Definition of max degree for output
          if ( l_max < l_max_cmb ) l_max_cmb=l_max
 
-         !--- Define postition of CMB on radial grid:
-         n_r_cmb=1
-
          !--- Calculate no of data for l_max_cmb:
          m_max_cmb=(l_max_cmb/minc)*minc
-         lm_max_cmb= m_max_cmb*(l_max_cmb+1)/minc &
-              &     -m_max_cmb*(m_max_cmb-minc)/(2*minc) &
-              &     +l_max_cmb-m_max_cmb+1
+         lm_max_cmb= m_max_cmb*(l_max_cmb+1)/minc        &
+         &          -m_max_cmb*(m_max_cmb-minc)/(2*minc) &
+         &          +l_max_cmb-m_max_cmb+1
          n_data=2*lm_max_cmb-l_max_cmb-2
 
-         allocate(out(n_data))
+         allocate(output(n_data))
 
          !--- Increase no. of cmb_sets:
          n_cmb_sets=n_cmb_sets+1
 
          !--- Open output file name:
          if ( l_save_out .or. n_cmb_sets == 0 ) then
-            open(newunit=n_cmb_file, file=cmb_file, position='append', &
+            open(unit=n_cmb_file, file=cmb_file, position='append', &
             &    form='unformatted')
          end if
 
          !--- If this is the first set write l_max_cmb and minc into file:
          if ( n_cmb_sets <= 1 ) write(n_cmb_file) l_max_cmb,minc,n_data
 
-         !--- Write b(*) into output array out(*):
+         !--- Write b(*) into output array output(*):
          n_out=0
 
          !--- Axisymmetric part: (m=0) only real part stored
          do l=1,l_max_cmb
             lm=lm2(l,0)
             n_out=n_out+1
-            out(n_out)=real(work(lm))
+            output(n_out)=real(work(lm))
          end do
 
          !--- Non-axisymmetric part: store real and imag part
@@ -141,56 +243,86 @@ contains
             do l=m,l_max_cmb
                lm=lm2(l,m)
                n_out=n_out+1
-               out(n_out)=real(work(lm))
+               output(n_out)=real(work(lm))
                n_out=n_out+1
-               out(n_out)=aimag(work(lm))
+               output(n_out)=aimag(work(lm))
             end do
          end do
 
-         !--- Finally write output array out(*) into cmb_file:
-         write(n_cmb_file) time,(out(n),n=1,n_out)
+         !--- Finally write output array output(*) into cmb_file:
+         write(n_cmb_file) time,(output(n),n=1,n_out)
 
          !--- Close cmb_file
-         if ( l_save_out .or. n_cmb_sets == 0 ) then
-            close(n_cmb_file)
-         end if
+         if ( l_save_out .or. n_cmb_sets == 0 ) close(n_cmb_file)
 
-         deallocate(out)
+         deallocate(output)
 
       end if
 
    end subroutine write_Bcmb
 !----------------------------------------------------------------------
+   subroutine write_coeffs(w_LMloc, dw_LMloc, ddw_LMloc, z_LMLoc, b_LMLoc,  &
+              &            db_LMloc, ddb_LMloc, aj_LMloc, s_LMloc,          &
+              &            xi_LMloc, timeScaled)
+      !
+      ! This routine handles the writing of coefficients at a given depth
+      !
+
+      real(cp),    intent(in) :: timeScaled
+      complex(cp), intent(in) :: w_LMloc(:,:)
+      complex(cp), intent(in) :: dw_LMloc(:,:)
+      complex(cp), intent(in) :: ddw_LMloc(:,:)
+      complex(cp), intent(in) :: z_LMloc(:,:)
+      complex(cp), intent(in) :: b_LMloc(:,:)
+      complex(cp), intent(in) :: db_LMloc(:,:)
+      complex(cp), intent(in) :: ddb_LMloc(:,:)
+      complex(cp), intent(in) :: aj_LMloc(:,:)
+      complex(cp), intent(in) :: s_LMloc(:,:)
+      complex(cp), intent(in) :: xi_LMloc(:,:)
+
+      integer :: n, nR
+
+      !--- Store potential coeffs for velocity fields and magnetic fields
+      do n=1,n_coeff_r_max
+         nR=n_coeff_r(n)
+         call write_coeff_r(timeScaled,w_LMloc(:,nR),dw_LMloc(:,nR),  &
+              &             ddw_LMloc(:,nR),z_LMloc(:,nR),r(nR),      &
+              &             l_max_r,n_v_r_sets(n),v_r_file(n),        &
+              &             n_v_r_file(n),1)
+         if ( l_mag )                                                   &
+            call write_coeff_r(timeScaled,b_LMloc(:,nR),db_LMloc(:,nR), &
+                 &             ddb_LMloc(:,nR),aj_LMloc(:,nR),r(nR),    &
+                 &             l_max_r,n_b_r_sets(n),b_r_file(n),       &
+                 &             n_b_r_file(n),2)
+         if ( l_r_fieldT )                                              &
+            call write_coeff_r(timeScaled,s_LMloc(:,nR),db_LMloc(:,nR), &
+                 &             ddb_LMloc(:,nR),aj_LMloc(:,nR),r(nR),    &
+                 &             l_max_r,n_T_r_sets(n),T_r_file(n),       &
+                 &             n_t_r_file(n),3)
+         if ( l_r_fieldXi )                                              &
+            call write_coeff_r(timeScaled,xi_LMloc(:,nR),db_LMloc(:,nR), &
+                 &             ddb_LMloc(:,nR),aj_LMloc(:,nR),r(nR),     &
+                 &             l_max_r,n_Xi_r_sets(n),Xi_r_file(n),      &
+                 &             n_xi_r_file(n),3)
+      end do
+
+   end subroutine write_coeffs
+!----------------------------------------------------------------------
    subroutine write_coeff_r(time,w_LMloc,dw_LMloc,ddw_LMloc,z_LMloc,r,  &
-      &                     l_max_r,n_sets,file,n_file,nVBS)
+              &             l_max_r,n_sets,file,n_file,nVBS)
       !
-      ! Each call of this subroutine writes time and the poloidal and     
-      ! toroidal coeffitients w,dw,z at a specific radius up to degree    
-      ! and order l_max_r at the end of output file $file.                
-      ! If the input is magnetic field (nVBS=2) ddw is stored as well.    
-      ! If the input is entropy field (nVBS=3) only ddw=s is stored.      
-      ! The parameters l_max_r, minc, the number of stored coeffs and     
+      ! Each call of this subroutine writes time and the poloidal and
+      ! toroidal coeffitients w,dw,z at a specific radius up to degree
+      ! and order l_max_r at the end of output file $file.
+      ! If the input is magnetic field (nVBS=2) ddw is stored as well.
+      ! If the input is entropy field (nVBS=3) only ddw=s is stored.
+      ! The parameters l_max_r, minc, the number of stored coeffs and
       ! radius in the outer core are written into the first line of $file.
-      ! Each further set contains:                                        
+      ! Each further set contains:
       !
-      !     .. code-block :: fortran
+      ! Real and imaginary part of w(*) for all orders m<=l are written
+      ! for a specific degree l, then for the degrees l+1, l+2, l_max_r.
       !
-      !               time,
-      !               real(w(l=0,m=0)),imag(w(l=0,m=0)),                  
-      !               real(w(l=1,m=0)),imag(w(l=1,m=0)),                  
-      !               ...
-      !               real(dw(l=0,m=0)),imag(dw(l=0,m=0)),                
-      !               real(dw(l=1,m=0)),imag(dw(l=1,m=0)),                
-      !               ...
-      !               real(z(l=0,m=0)),imag(z(l=0,m=0)),                  
-      !               real(z(l=1,m=0)),imag(z(l=1,m=0)),                  
-      !               ...
-      !               real(ddw(l=0,m=0)),imag(ddw(l=0,m=0)),              
-      !               real(ddw(l=1,m=0)),imag(ddw(l=1,m=0)),              
-      !                                                                   
-      ! Real and imaginary part of w(*) for all orders m<=l are written   
-      ! for a specific degree l, then for the degrees l+1, l+2, l_max_r.  
-      !                                                                   
 
       !-- Input variables:
       real(cp),         intent(in) :: r                 ! radius of coeffs
@@ -200,7 +332,7 @@ contains
       complex(cp),      intent(in) :: ddw_LMloc(llm:ulm)! dr^2 of Poloidal field potential
       complex(cp),      intent(in) :: z_LMloc(llm:ulm)   ! Toroidal field potential
       character(len=*), intent(in) :: file         ! Name of output file
-      integer,          intent(in) :: nVBS         ! True if output is flow
+      integer,          intent(in) :: nVBS   ! 1 if flow, 2 if magnetic field and 3 if temperature or composition
 
       !-- Output:
       integer, intent(inout) :: n_file      ! Output unit for $file
@@ -216,32 +348,32 @@ contains
       integer :: lm_max_r       ! Max no of combinations l,m for output
       integer :: n_data         ! No of output data
 
-      real(cp), allocatable ::  out(:)! Output array
+      complex(cp) :: work(lm_max)
+      real(cp), allocatable ::  output(:)! Output array
 
       !--- Definition of max degree for output
       if ( l_max < l_max_r ) l_max_r=l_max
 
       !--- Calculate no of data for l_max_r:
       m_max_r=(l_max_r/minc)*minc
-      lm_max_r=m_max_r*(l_max_r+1)/minc- &
-           m_max_r*(m_max_r-minc)/(2*minc) + &
-           l_max_r-m_max_r+1
+      lm_max_r=m_max_r*(l_max_r+1)/minc- m_max_r*(m_max_r-minc)/(2*minc) + &
+      &        l_max_r-m_max_r+1
       n_data=2*lm_max_r-l_max_r-2
 
       if ( rank == 0 ) then
          if ( nVBS == 1 ) then
-            allocate(out(3*n_data))
+            allocate(output(3*n_data))
          else if ( nVBS == 2 ) then
-            allocate(out(4*n_data))
+            allocate(output(4*n_data))
          else if ( nVBS == 3 ) then
-            allocate(out(n_data+1))
+            allocate(output(n_data+1))
          end if
       end if
 
       !--- Increase no. of sets:
       n_sets=n_sets+1
 
-      !--- Write b(*) into output array out(*):
+      !--- Write b(*) into output array output(*):
       n_out=0
 
       call gather_from_lo_to_rank0(w_LMloc, work)
@@ -253,7 +385,7 @@ contains
                lm=lm2(l,0)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                end if
             end do
          else
@@ -262,7 +394,7 @@ contains
                lm=lm2(l,0)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                end if
             end do
          end if
@@ -273,9 +405,9 @@ contains
                lm=lm2(l,m)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                   n_out=n_out+1
-                  out(n_out)=aimag(work(lm))
+                  output(n_out)=aimag(work(lm))
                end if
             end do
          end do
@@ -292,7 +424,7 @@ contains
                lm=lm2(l,0)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                end if
             end do
             !--- Non-axisymmetric part of dv: store real and imag part
@@ -301,9 +433,9 @@ contains
                   lm=lm2(l,m)
                   if ( l <= l_max_r ) then
                      n_out=n_out+1
-                     out(n_out)=real(work(lm))
+                     output(n_out)=real(work(lm))
                      n_out=n_out+1
-                     out(n_out)=aimag(work(lm))
+                     output(n_out)=aimag(work(lm))
                   end if
                end do
             end do
@@ -317,7 +449,7 @@ contains
                lm=lm2(l,0)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                end if
             end do
             !--- Non-axisymmetric part of z: store real and imag part
@@ -326,9 +458,9 @@ contains
                   lm=lm2(l,m)
                   if ( l <= l_max_r ) then
                      n_out=n_out+1
-                     out(n_out)=real(work(lm))
+                     output(n_out)=real(work(lm))
                      n_out=n_out+1
-                     out(n_out)=aimag(work(lm))
+                     output(n_out)=aimag(work(lm))
                   end if
                end do
             end do
@@ -347,7 +479,7 @@ contains
                lm=lm2(l,0)
                if ( l <= l_max_r ) then
                   n_out=n_out+1
-                  out(n_out)=real(work(lm))
+                  output(n_out)=real(work(lm))
                end if
             end do
             !--- Non-axisymmetric part of ddw: store real and imag part
@@ -356,21 +488,21 @@ contains
                   lm=lm2(l,m)
                   if ( l <= l_max_r ) then
                      n_out=n_out+1
-                     out(n_out)=real(work(lm))
+                     output(n_out)=real(work(lm))
                      n_out=n_out+1
-                     out(n_out)=aimag(work(lm))
+                     output(n_out)=aimag(work(lm))
                   end if
                end do
             end do
-         end if 
+         end if
       end if
 
       if ( rank == 0 ) then
 
          !--- Open output file with name $file:
          if ( l_save_out ) then
-            open(newunit=n_file, file=file, form='unformatted', status='unknown', &
-                 position='append')
+            open(unit=n_file, file=file, form='unformatted', status='unknown', &
+            &    position='append')
          end if
 
          !--- If this is the first set write, l_max_r and minc into first line:
@@ -378,19 +510,15 @@ contains
             write(n_file) l_max_r,minc,n_data,r
          end if
 
-
-         !--- Finally write output array out(*) into file:
-         write(n_file) time,(out(n),n=1,n_out)
+         !--- Finally write output array output(*) into file:
+         write(n_file) time,(output(n),n=1,n_out)
 
          !--- Close file
-         if ( l_save_out ) then
-            close(n_file)
-         end if
+         if ( l_save_out ) close(n_file)
 
-         deallocate(out)
+         deallocate(output)
 
       end if
-
 
    end subroutine write_coeff_r
 !-------------------------------------------------------------------------------
@@ -399,6 +527,7 @@ contains
       !
       ! This routine stores the fields in (lm,r) space using MPI-IO
       !
+
       !-- Input of variables:
       real(cp),         intent(in) :: time ! Time
       complex(cp),      intent(in) :: b(lm_max,nRstart:nRstop) ! Poloidal potential
@@ -412,39 +541,47 @@ contains
       !-- Local variables
       complex(outp), allocatable :: tmp(:,:)
       complex(cp), allocatable :: work(:,:)
+      real(outp) :: tmpr(n_r_max)
       integer :: info, fh, version, istat(MPI_STATUS_SIZE), datatype
       integer :: arr_size(2), arr_loc_size(2), arr_start(2)
       integer(lip) :: disp, offset, size_tmp
+      integer :: lm_max_pot, m_max_pot, l, m, lm_big, lm
       character(80) :: string
       character(:), allocatable :: head
       character(80) :: fileName
       logical :: lVB
 
-      version = 1 ! file version
+      version = 2 ! file version
 
-
-      allocate( tmp(lm_max,nRstart:nRstop) )
+      l_max_pot=min(l_max_pot,l_max) ! In principle already taken care of in Namelists.f90
+      m_max_pot=(l_max_pot/minc)*minc
+      m_max_pot=min(m_max_pot,m_max)
+      ! number of l/m combinations
+      lm_max_pot=0
+      do m=m_min,m_max_pot,minc
+         do l=m,l_max_pot
+            lm_max_pot=lm_max_pot+1
+         end do
+      end do
+      allocate( tmp(lm_max_pot,nRstart:nRstop) )
 
       head = trim(adjustl(root))
       lVB=.false.
       if ( root(1:1) /= 'T' .and. root(1:2) /= 'Xi' ) lVB= .true.
 
-      if ( nPotSets == 0 ) then ! nPotSets=-1 on call
+      if ( nPotSets == 0 ) then
          fileName=head//tag
       else
          write(string, *) nPotSets
          fileName=head(1:len(head)-1)//'_'//trim(adjustl(string))//'.'//tag
-         !         end if
       end if
 
       !--  MPI-IO setup
       call mpiio_setup(info)
 
-
       !-- Open file
       call MPI_File_Open(MPI_COMM_WORLD, fileName, ior(MPI_MODE_WRONLY, &
            &             MPI_MODE_CREATE), info, fh, ierr)
-
 
       !-- Set the first view
       disp = 0
@@ -468,19 +605,20 @@ contains
               &              istat, ierr)
          call MPI_File_Write(fh, n_r_max, 1, MPI_INTEGER, istat, ierr)
          call MPI_File_Write(fh, n_r_ic_max, 1, MPI_INTEGER, istat, ierr)
-         call MPI_File_Write(fh, l_max, 1, MPI_INTEGER, istat, ierr)
+         call MPI_File_Write(fh, l_max_pot, 1, MPI_INTEGER, istat, ierr)
          call MPI_File_Write(fh, minc, 1, MPI_INTEGER, istat, ierr)
-         call MPI_File_Write(fh, lm_max, 1, MPI_INTEGER, istat, ierr)
-
+         call MPI_File_Write(fh, lm_max_pot, 1, MPI_INTEGER, istat, ierr)
+         call MPI_File_Write(fh, m_min, 1, MPI_INTEGER, istat, ierr)
+         call MPI_File_Write(fh, m_max_pot, 1, MPI_INTEGER, istat, ierr)
          call MPI_File_Write(fh, real(omega_ic,outp), 1, MPI_OUT_REAL, &
               &              istat, ierr)
          call MPI_File_Write(fh, real(omega_ma,outp), 1, MPI_OUT_REAL, &
               &              istat, ierr)
 
-         call MPI_File_Write(fh, real(r,outp), n_r_max, MPI_OUT_REAL, &
-              &              istat, ierr)
-         call MPI_File_Write(fh, real(rho0,outp), n_r_max, MPI_OUT_REAL, &
-              &              istat, ierr)
+         tmpr(:)=real(r,outp)
+         call MPI_File_Write(fh, tmpr, n_r_max, MPI_OUT_REAL, istat, ierr)
+         tmpr(:)=real(rho0,outp)
+         call MPI_File_Write(fh, tmpr, n_r_max, MPI_OUT_REAL, istat, ierr)
 
          !-- Rank 0 gets the displacement
          call MPI_File_get_position(fh, offset, ierr)
@@ -490,9 +628,9 @@ contains
       !-- Broadcast the displacement
       call MPI_Bcast(disp, 1, MPI_OFFSET, 0, MPI_COMM_WORLD, ierr)
 
-      arr_size(1) = lm_max
+      arr_size(1) = lm_max_pot
       arr_size(2) = n_r_max
-      arr_loc_size(1) = lm_max
+      arr_loc_size(1) = lm_max_pot
       arr_loc_size(2) = nR_per_rank
       arr_start(1) = 0
       arr_start(2) = nRstart-1
@@ -501,19 +639,25 @@ contains
            &                        datatype, ierr)
       call MPI_Type_Commit(datatype, ierr)
 
-      !-- Copy into a single precision  
-      tmp(:,:) = cmplx(b(:,:), kind=outp)
-
+      !-- Copy into a single precision array
+      lm=1
+      do m=m_min,m_max_pot,minc
+         do l=m,l_max_pot
+            lm_big=lm2(l,m)
+            tmp(lm,:)=cmplx(b(lm_big,:), kind=outp)
+            lm=lm+1
+         end do
+      end do
 
       !-- Set the view after the header
       call MPI_File_Set_View(fh, disp, MPI_COMPLEX8, datatype, "native", &
            &                 info, ierr)
 
-      size_tmp=int(lm_max,kind=lip)*int(n_r_max,kind=lip)* &
+      size_tmp=int(lm_max_pot,kind=lip)*int(n_r_max,kind=lip)* &
       &        int(2*SIZEOF_OUT_REAL,kind=lip)
 
       !-- Poloidal potential
-      call MPI_File_Write_all(fh, tmp, lm_max*nR_per_rank, MPI_COMPLEX8, &
+      call MPI_File_Write_all(fh, tmp, lm_max_pot*nR_per_rank, MPI_COMPLEX8, &
            &                  istat, ierr)
       disp = disp+size_tmp
       call MPI_File_Set_View(fh, disp, MPI_COMPLEX8, datatype, "native", &
@@ -521,14 +665,20 @@ contains
 
       !-- Toroidal potential
       if ( lVB ) then
-         tmp(:,:) = cmplx(aj(:,:), kind=outp)
-         call MPI_File_Write_all(fh, tmp, lm_max*nR_per_rank, MPI_COMPLEX8, &
+         lm=1
+         do m=m_min,m_max_pot,minc
+            do l=m,l_max_pot
+               lm_big=lm2(l,m)
+               tmp(lm,:)=cmplx(aj(lm_big,:), kind=outp)
+               lm=lm+1
+            end do
+         end do
+         call MPI_File_Write_all(fh, tmp, lm_max_pot*nR_per_rank, MPI_COMPLEX8, &
               &                  istat, ierr)
          disp = disp+size_tmp
          call MPI_File_Set_View(fh, disp, MPI_COMPLEX8, datatype, "native", &
               &                 info, ierr)
       end if
-
 
       !-- Displacement at the end of the file
       offset = 0
@@ -544,22 +694,36 @@ contains
       if ( root(1:1) == 'B' .and. l_cond_ic ) then
 
          if ( rank == 0 ) then
-            allocate ( work(lm_max, n_r_ic_max), tmp(lm_max, n_r_ic_max) ) 
+            allocate ( work(lm_max, n_r_ic_max), tmp(lm_max_pot, n_r_ic_max) )
          else
             allocate ( work(1,1), tmp(1,1) )
          end if
 
          call gather_all_from_lo_to_rank0(gt_IC, b_ic, work)
          if ( rank == 0 ) then
-            tmp(:,:)=cmplx(work(:,:), kind=outp)
-            call MPI_File_Write(fh, tmp, lm_max*n_r_ic_max, MPI_COMPLEX8, &
+            lm=1
+            do m=m_min,m_max_pot,minc
+               do l=m,l_max_pot
+                  lm_big=lm2(l,m)
+                  tmp(lm,:)=cmplx(work(lm_big,:), kind=outp)
+                  lm=lm+1
+               end do
+            end do
+            call MPI_File_Write(fh, tmp, lm_max_pot*n_r_ic_max, MPI_COMPLEX8, &
                  &              istat, ierr)
          end if
 
          call gather_all_from_lo_to_rank0(gt_IC, aj_ic, work)
          if ( rank == 0 ) then
-            tmp(:,:)=cmplx(work(:,:), kind=outp)
-            call MPI_File_Write(fh, tmp, lm_max*n_r_ic_max, MPI_COMPLEX8, &
+            lm=1
+            do m=m_min,m_max_pot,minc
+               do l=m,l_max_pot
+                  lm_big=lm2(l,m)
+                  tmp(lm,:)=cmplx(work(lm_big,:), kind=outp)
+                  lm=lm+1
+               end do
+            end do
+            call MPI_File_Write(fh, tmp, lm_max_pot*n_r_ic_max, MPI_COMPLEX8, &
                  &              istat, ierr)
          end if
 
@@ -579,42 +743,55 @@ contains
       !
 
       !-- Input of variables:
-      real(cp),         intent(in) :: time
+      real(cp),         intent(in) :: time ! Output time
       complex(cp),      intent(in) :: b(llm:ulm,n_r_max)
       complex(cp),      intent(in) :: aj(llm:ulm,n_r_max)
       complex(cp),      intent(in) :: b_ic(llm:ulm,n_r_ic_max)
       complex(cp),      intent(in) :: aj_ic(llm:ulm,n_r_ic_max)
-      character(len=*), intent(in) :: root
+      character(len=*), intent(in) :: root ! File prefix
       real(cp),         intent(in) :: omega_ma,omega_ic
       integer,          intent(in) :: nPotSets
-    
+
       !-- Work arrays:
       complex(cp), allocatable :: workA_global(:,:)
       complex(cp), allocatable :: workB_global(:,:)
-    
+      complex(outp), allocatable :: tmp(:,:)
+
       !-- File outputs:
       character(80) :: string
       character(:), allocatable :: head
-      integer :: n_r, lm, version
+      integer :: lm_max_pot, m_max_pot, l, m, lm_big, lm, n_r, version
       character(80) :: fileName
       logical :: lVB
 
-      version = 1
-    
+      l_max_pot=min(l_max_pot,l_max) ! In principle already taken care of in Namelists.f90
+      m_max_pot=(l_max_pot/minc)*minc
+      m_max_pot=min(m_max_pot,m_max)
+      ! number of l/m combinations
+      lm_max_pot=0
+      do m=m_min,m_max_pot,minc
+         do l=m,l_max_pot
+            lm_max_pot=lm_max_pot+1
+         end do
+      end do
+
+      version = 2 ! file version 2 stores m_min and m_max in the header
+
       head = trim(adjustl(root))
       lVB=.false.
       if ( root(1:1) /= 'T' .and. root(1:2) /= 'Xi' ) lVB= .true.
 
-    
       ! now gather the fields on rank 0 and write them to file
       ! it would be nicer to write the fields with MPI IO in parallel
       ! but then presumably the file format will change
       if ( rank == 0 ) then
          allocate(workA_global(lm_max,n_r_max))
          allocate(workB_global(lm_max,n_r_max))
+         allocate(tmp(lm_max_pot,n_r_max))
       else
          allocate(workA_global(1,n_r_max))
          allocate(workB_global(1,n_r_max))
+         allocate(tmp(1,1))
       end if
 
       call gather_all_from_lo_to_rank0(gt_OC, b, workA_global)
@@ -633,53 +810,87 @@ contains
          open(newunit=fileHandle, file=fileName, form='unformatted', &
          &    status='unknown', access='stream')
 
+         !-- Header
          write(fileHandle) version, real(time*tScale,kind=outp)
          write(fileHandle) real(ra,kind=outp), real(pr,kind=outp),     &
          &                 real(raxi,kind=outp), real(sc,kind=outp),   &
          &                 real(prmag,kind=outp), real(ek,kind=outp),  &
          &                 real(radratio,kind=outp),                   &
          &                 real(sigma_ratio,kind=outp)
-
-         write(fileHandle) n_r_max,n_r_ic_max,l_max,minc,lm_max
-
+         write(fileHandle) n_r_max,n_r_ic_max,l_max_pot,minc,lm_max_pot
+         write(fileHandle) m_min, m_max_pot
          write(fileHandle) real(omega_ic,kind=outp), real(omega_ma,kind=outp)
-
          write(fileHandle) real(r,kind=outp), real(rho0, kind=outp)
 
-         write(fileHandle) ((cmplx(real(workA_global(lm,n_r)),         &
-         &                 aimag(workA_global(lm,n_r)),kind=outp ),    &
-         &                 lm=1,lm_max),n_r=1,n_r_max)
+         !-- Write fields
+         lm=1
+         do m=m_min,m_max_pot,minc
+            do l=m,l_max_pot
+               lm_big=lm2(l,m)
+               tmp(lm,:)=cmplx(workA_global(lm_big,:), kind=outp)
+               lm=lm+1
+            end do
+         end do
+         write(fileHandle) ((tmp(lm,n_r),lm=1,lm_max_pot),n_r=1,n_r_max)
          if ( lVB ) then
-            write(fileHandle) ((cmplx(real(workB_global(lm,n_r)),      &
-            &                 aimag(workB_global(lm,n_r)),kind=outp ), &
-            &                 lm=1,lm_max),n_r=1,n_r_max)
+            lm=1
+            do m=m_min,m_max_pot,minc
+               do l=m,l_max_pot
+                  lm_big=lm2(l,m)
+                  tmp(lm,:)=cmplx(workB_global(lm_big,:), kind=outp)
+                  lm=lm+1
+               end do
+            end do
+            write(fileHandle) ((tmp(lm,n_r),lm=1,lm_max_pot),n_r=1,n_r_max)
          end if
       end if
 
-
       !-- Now inner core field
       if ( root(1:1) == 'B' .and. l_cond_ic ) then
+
+         !-- Reallocate arrays with the right-size
+         deallocate(workA_global, workB_global, tmp)
+         if ( rank == 0 ) then
+            allocate(workA_global(lm_max,n_r_ic_max))
+            allocate(workB_global(lm_max,n_r_ic_max))
+            allocate(tmp(lm_max_pot,n_r_ic_max))
+         else
+            allocate(workA_global(1,n_r_ic_max))
+            allocate(workB_global(1,n_r_ic_max))
+            allocate(tmp(1,1))
+         end if
 
          call gather_all_from_lo_to_rank0(gt_IC, b_ic, workA_global)
          call gather_all_from_lo_to_rank0(gt_IC, aj_ic, workB_global)
 
          if ( rank == 0 ) then
-            write(fileHandle) ( (cmplx( real(workA_global(lm,n_r)),    &
-            &                 aimag(workA_global(lm,n_r)), kind=outp ),&
-            &          lm=1,lm_max),n_r=1,n_r_ic_max )
-            write(fileHandle) ( (cmplx( real(workB_global(lm,n_r)),    &
-            &                 aimag(workB_global(lm,n_r)), kind=outp), &
-            &          lm=1,lm_max),n_r=1,n_r_ic_max )
+            lm=1
+            do m=m_min,m_max_pot,minc
+               do l=m,l_max_pot
+                  lm_big=lm2(l,m)
+                  tmp(lm,:)=cmplx(workA_global(lm_big,:), kind=outp)
+                  lm=lm+1
+               end do
+            end do
+            write(fileHandle) ((tmp(lm,n_r),lm=1,lm_max),n_r=1,n_r_ic_max)
+            lm=1
+            do m=m_min,m_max_pot,minc
+               do l=m,l_max_pot
+                  lm_big=lm2(l,m)
+                  tmp(lm,:)=cmplx(workB_global(lm_big,:), kind=outp)
+                  lm=lm+1
+               end do
+            end do
+            write(fileHandle) ((tmp(lm,n_r),lm=1,lm_max),n_r=1,n_r_ic_max)
          end if
 
       end if
-
 
       if ( rank == 0 ) then
          close(fileHandle)
       end if
 
-      deallocate( workA_global, workB_global )
+      deallocate( workA_global, workB_global, tmp )
 
    end subroutine write_Pot
 !------------------------------------------------------------------------------

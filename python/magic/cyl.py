@@ -11,6 +11,11 @@ from scipy.interpolate import interp1d
 import os
 import pickle
 
+try:
+    from numpy import trapz as trapz
+except:
+    from numpy import trapezoid as trapz
+
 if buildSo:
     try:
         from magic.cylavg import *
@@ -20,8 +25,8 @@ if buildSo:
 else:
     zavgMode = 'python'
 
-def sph2cyl_plane(data, rad, ns, nz):
-    """
+def sph2cyl_plane(data, rad, ns):
+    r"""
     This function extrapolates a phi-slice of a spherical shell on
     a cylindrical grid
 
@@ -31,7 +36,7 @@ def sph2cyl_plane(data, rad, ns, nz):
     >>> vpm = gr.vphi.mean(axis=0)
     >>> sm = gr.entropy.mean(axis=0)
     >>> # Interpolate on a cylindrical grid
-    >>> Z, S, outputs = sph2cyl_plane([vpm, sm], gr.radius, 512, 1024)
+    >>> Z, S, outputs = sph2cyl_plane([vpm, sm], gr.radius, ns=512)
     >>> vpm_cyl, sm_cyl = outputs
 
     :param data: a list of 2-D arrays [(ntheta, nr), (ntheta, nr), ...]
@@ -40,8 +45,6 @@ def sph2cyl_plane(data, rad, ns, nz):
     :type rad: numpy.ndarray
     :param ns: number of grid points in s direction
     :type ns: int
-    :param nz: number of grid points in z direction
-    :type nz: int
     :returns: a python tuple that contains two numpy.ndarray and a list (S,Z,output).
               S[nz,ns] is a meshgrid that contains the radial coordinate.
               Z[nz,ns] is a meshgrid that contains the vertical coordinate.
@@ -50,41 +53,55 @@ def sph2cyl_plane(data, rad, ns, nz):
     :rtype: tuple
     """
     ntheta, nr = data[0].shape
-
-    radius = rad[::-1]
-
     theta = np.linspace(0., np.pi, ntheta)
+    nz = 2*ns
 
-    Z, S = np.mgrid[-radius.max():radius.max():nz*1j,0:radius.max():ns*1j]
+    if zavgMode == 'f2py':
 
-    new_r = np.sqrt(S**2+Z**2).ravel()
-    new_theta = np.arctan2(S, Z).ravel()
-    ir = interp1d(radius, np.arange(len(radius)), bounds_error=False)
-    it = interp1d(theta, np.arange(len(theta)), bounds_error=False)
+        cylRad = np.linspace(0., rad[0], ns)
+        output = []
+        for dat in data:
+            Z, dat_cyl = sph_to_cyl(dat, rad, cylRad, theta)
+            output.append(dat_cyl)
 
-    new_ir = ir(new_r)
-    new_it = it(new_theta)
-    new_ir[new_r > radius.max()] = len(radius)-1.
-    new_ir[new_r < radius.min()] = 0.
+        return cylRad, Z, output
 
-    coords = np.array([new_it, new_ir])
+    else:
 
-    output = []
-    for dat in data:
-        dat_cyl = map_coordinates(dat[:, ::-1], coords, order=3)
-        dat_cyl[new_r > radius.max()] = 0.
-        dat_cyl[new_r < radius.min()] = 0.
-        dat_cyl = dat_cyl.reshape((nz, ns))
-        output.append(dat_cyl)
+        radius = rad[::-1]
 
-    return Z, S, output
+        theta = np.linspace(0., np.pi, ntheta)
+
+        Z, S = np.mgrid[-radius.max():radius.max():nz*1j,0:radius.max():ns*1j]
+
+        new_r = np.sqrt(S**2+Z**2).ravel()
+        new_theta = np.arctan2(S, Z).ravel()
+        ir = interp1d(radius, np.arange(len(radius)), bounds_error=False)
+        it = interp1d(theta, np.arange(len(theta)), bounds_error=False)
+
+        new_ir = ir(new_r)
+        new_it = it(new_theta)
+        new_ir[new_r > radius.max()] = len(radius)-1.
+        new_ir[new_r < radius.min()] = 0.
+
+        coords = np.array([new_it, new_ir])
+
+        output = []
+        for dat in data:
+            dat_cyl = map_coordinates(dat[:, ::-1], coords, order=3)
+            dat_cyl[new_r > radius.max()] = 0.
+            dat_cyl[new_r < radius.min()] = 0.
+            dat_cyl = dat_cyl.reshape((nz, ns))
+            output.append(dat_cyl)
+
+        return S, Z, output
 
 if zavgMode == 'f2py':
 
     def zavg(input, radius, ns, minc, save=True, filename='vp.pickle',
-             normed=True):
+             normed=True, colat=None):
         """
-        This function computes a z-integration of a list of input arrays 
+        This function computes a z-integration of a list of input arrays
         (on the spherical grid). This works well for 2-D (phi-slice) arrays.
         In case of 3-D arrays, only one element is allowed (too demanding
         otherwise).
@@ -102,9 +119,11 @@ if zavgMode == 'f2py':
         :type save: bool
         :param filename: name of the output pickle when save=True
         :type filename: str
-        :param normed: a boolean to specify if ones wants to simply integrate 
+        :param normed: a boolean to specify if ones wants to simply integrate
                        over z or compute a z-average (default is True: average)
         :type normed: bool
+        :param colat: an optional array containing the colatitudes
+        :type colat: numpy.ndarray
         :returns: a python tuple that contains two numpy.ndarray and a list
                   (height,cylRad,output) height[ns] is the height of the
                   spherical shell for all radii. cylRad[ns] is the cylindrical
@@ -119,7 +138,10 @@ if zavgMode == 'f2py':
             ntheta = input[0].shape[1]
         elif len(input[0].shape) == 2:
             ntheta = input[0].shape[0]
-        theta = np.linspace(0., np.pi, ntheta)
+        if colat is None:
+            theta = np.linspace(0., np.pi, ntheta)
+        else:
+            theta = colat
 
         height = np.zeros_like(cylRad)
         height[cylRad >= ri] = 2.*np.sqrt(ro**2-cylRad[cylRad >= ri]**2)
@@ -139,8 +161,8 @@ if zavgMode == 'f2py':
             if save:
                 nphi, ntheta, nr = input[0].shape
                 file = open(filename, 'wb')
-                pickle.dump([cylRad, phi, output], file) # cylindrical average
-                pickle.dump([radius, phi, input[0][:, ntheta/2, :]], file) # equatorial cut
+                pickle.dump([height, cylRad, phi, output], file) # cylindrical average
+                pickle.dump([radius, phi, input[0][:, ntheta//2, :]], file) # equatorial cut
                 file.close()
             return height, cylRad, phi, output
 
@@ -169,8 +191,8 @@ else:
     def zavg(input, radius, ns, minc, save=True, filename='vp.pickle',
              normed=True):
         """
-        This function computes a z-integration of a list of input arrays 
-        (on the spherical grid). This works well for 2-D (phi-slice) 
+        This function computes a z-integration of a list of input arrays
+        (on the spherical grid). This works well for 2-D (phi-slice)
         arrays. In case of 3-D arrays, only one element is allowed
         (too demanding otherwise).
 
@@ -214,11 +236,10 @@ else:
             phi = np.linspace(0., 2.*np.pi/minc, nphi)
             output = np.zeros((nphi, ns-2), dtype=input[0].dtype)
             for iphi in progressbar(range(nphi)):
-                Z, S, out2D = sph2cyl_plane([input[0][iphi, ...]], radius, ns,
-                                            nz)
+                Z, S, out2D = sph2cyl_plane([input[0][iphi, ...]], radius, ns)
                 S = S[:, 1:-1]
                 Z = Z[:, 1:-1]
-                output[iphi, :] = np.trapz(out2D[0][:, 1:-1], z, axis=0)
+                output[iphi, :] = trapz(out2D[0][:, 1:-1], z, axis=0)
                 if normed:
                     output[iphi, :] /= height
 
@@ -230,13 +251,13 @@ else:
                 file.close()
             return height, cylRad, phi, output
         elif len(input[0].shape) == 2:
-            Z, S, out2D = sph2cyl_plane(input, radius, ns, nz)
+            Z, S, out2D = sph2cyl_plane(input, radius, ns)
             S = S[:, 1:-1]
             Z = Z[:, 1:-1]
             output = []
             outIntZ = np.zeros((ns-2), dtype=input[0].dtype)
             for k,out in enumerate(out2D):
-                outIntZ = np.trapz(out[:, 1:-1], z, axis=0)
+                outIntZ = trapz(out[:, 1:-1], z, axis=0)
                 if normed:
                     outIntZ /= height
                 output.append(outIntZ)
@@ -256,7 +277,7 @@ else:
 def sph2cyl(g, ns=None, nz=None):
     """
     This function interpolates the three flow (or magnetic field)
-    component of a :ref:`G_#.TAG <secGraphFile>` file
+    components of a :ref:`G_#.TAG <secGraphFile>` file
     on a cylindrical grid of size (ns, nz).
 
     .. warning:: This might be really slow!
@@ -322,7 +343,7 @@ def sph2cyl(g, ns=None, nz=None):
 
 
 class Cyl(MagicSetup):
-    """
+    r"""
     This class allows to extrapolate a given :ref:`graphic file <secGraphFile>`
     on a cylindrical grid. Once done, the extrapolated file is stored in
     a python.pickle file. It is then possible to display 2-D cuts of the extrapolated
@@ -398,7 +419,7 @@ class Cyl(MagicSetup):
             beta[i, :] = beta0
         Z, S, [rho, beta] = sph2cyl_plane([rho,beta],
                                  np.linspace(self.ro, self.ri, self.ns),
-                                 self.ns, self.nz)
+                                 self.ns)
         self.rho = np.zeros_like(self.vs)
         self.beta = np.zeros_like(self.vs)
         for i in range(self.npI):
@@ -408,7 +429,7 @@ class Cyl(MagicSetup):
 
     def surf(self, field='Bphi', r=0.85, vmin=None, vmax=None,
              levels=16, cm='RdYlBu_r', normed=True, figsize=None):
-        """
+        r"""
         Plot the surface distribution of an input field at a given
         input radius (normalised by the outer boundary radius).
 
@@ -483,7 +504,7 @@ class Cyl(MagicSetup):
 
     def equat(self, field='vs', levels=16, cm='RdYlBu_r', normed=True, vmax=None,
               vmin=None):
-        """
+        r"""
         Plot an input field in the equatorial plane.
 
             >>> c = Cyl(ns=65)

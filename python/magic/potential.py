@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 from magic import MagicSetup, scanDir
-from .setup import labTex, defaultCm, defaultLevels, labTex, buildSo
-from .libmagic import *
+from .setup import defaultCm, defaultLevels, labTex, buildSo
+from .libmagic import chebgrid, rderavg, symmetrize
 from .spectralTransforms import SpectralTransforms
 from .plotlib import radialContour, merContour, equatContour
 import os, re, time
 import numpy as np
 import matplotlib.pyplot as plt
-from .npfile import *
+from .npfile import npfile
 
 if buildSo:
     import magic.lmrreader_single as Psngl
@@ -31,17 +31,23 @@ def getPotEndianness(filename):
     try:
         f = npfile(filename, endian='l')
         try:  # This test is not 100% safe but in principle it should work
-            i = f.fort_read('i4')
+            i = f.fort_read(np.int32)
             if abs(i[0]) > 100:
                 raise TypeError
             endian = 'l'
+            f.close()
         except TypeError:
+            f.close()
+            f = npfile(filename, endian='B')
+            i = f.fort_read(np.int32)
+            if abs(i[0]) > 100:
+                raise TypeError
             endian = 'B'
-        f.close()
+            f.close()
         record_marker = True
     except ValueError:
         f = open(filename, 'rb')
-        ver = np.fromfile(f, dtype='i4', count=1)[0]
+        ver = np.fromfile(f, dtype=np.int32, count=1)[0]
         if abs(ver) < 100:
             endian = 'l'
         else:
@@ -77,7 +83,7 @@ class MagicPotential(MagicSetup):
     """
 
     def __init__(self, field='V', datadir='.', tag=None, ave=False, ipot=None,
-                 precision=np.float32, verbose=True, ic=False):
+                 precision=np.float32, verbose=True, ic=False, setup_SHT=False):
         """
         :param field: 'B', 'V', 'T' or 'Xi' (magnetic field, velocity field,
                       temperature or chemical composition)
@@ -97,6 +103,8 @@ class MagicPotential(MagicSetup):
         :type verbose: bool
         :param ic: read or don't read the inner core
         :type ic: bool
+        :param setup_SHT: set up the spherical harmonic transforms
+        :type setup_SHT: bool
         """
 
         if field != 'B':
@@ -133,7 +141,7 @@ class MagicPotential(MagicSetup):
                                     nml='log.{}'.format(tag))
         else:
             if ipot is not None:
-                pattern = os.path.join(datadir, '{}{}*'.format(self.name, ipot))
+                pattern = os.path.join(datadir, '{}{}.*'.format(self.name, ipot))
                 files = scanDir(pattern)
                 filename = files[-1]
             else:
@@ -155,27 +163,68 @@ class MagicPotential(MagicSetup):
             self.version = 1  # This will be over-written later
 
         t1 = time.time()
-        self.read(filename, field, endian, record_marker, ic, precision=precision)
+        self.read(filename, field, endian, record_marker, ic,
+                  precision=precision)
         t2 = time.time()
         if verbose:
             print('Time to read {}: {:.2e}'.format(filename, t2-t1))
 
-        self.n_theta_max = int(3*self.l_max/2)
-        if self.n_theta_max % 2:  # odd number
-            self.n_theta_max += 1
-        self.n_phi_max = int(2*self.n_theta_max/self.minc)
-        t1 = time.time()
-        self.sh = SpectralTransforms(l_max=self.l_max, minc=self.minc,
-                                     lm_max=self.lm_max,
-                                     n_theta_max=self.n_theta_max,
-                                     verbose=verbose)
-        t2 = time.time()
-        if verbose:
-            print('Time to set up the spectral transforms: {:.2e}'.format(t2-t1))
-        self.colat = self.sh.colat
+        self.idx = np.zeros((self.l_max+1, self.m_max+1), np.int32)
+        self.ell = np.zeros((self.lm_max), np.int32)
+        self.m = np.zeros((self.lm_max), np.int32)
+        lm = 0
+        for m in range(0, self.m_max+1, self.minc):
+            for l in range(m, self.l_max+1):
+                self.idx[l, m] = lm
+                self.ell[self.idx[l,m]] = l
+                self.m[self.idx[l,m]] = m
+                lm += 1
+        # In case m_min > 0: overwrite lm_max
+        if self.m_min > 0:
+            self.lm_max = lm
 
-        self.idx = self.sh.idx
-        self.ell = self.sh.ell
+        if self.version == 2 and self.m_min > 0:
+            mask = (self.m >= self.m_min)
+
+            pol = np.zeros([int(self.lm_max), int(self.n_r_max)],
+                           dtype=np.dtype(self.pol[0, 0]))
+            pol[mask, :] = self.pol
+            self.pol = pol
+
+            if (field != 'T' and field != 'Xi'):
+                tor = np.zeros([int(self.lm_max), int(self.n_r_max)],
+                               dtype=np.dtype(self.pol[0, 0]))
+                tor[mask, :] = self.tor
+                self.tor = tor
+
+            if ic:  # Repeat for ic
+                pol_ic = np.zeros([int(self.lm_max), int(self.n_r_ic_max)],
+                                  dtype=np.dtype(self.pol_ic[0, 0]))
+                tor_ic = np.zeros([int(self.lm_max), int(self.n_r_ic_max)],
+                                  dtype=np.dtype(self.pol_ic[0, 0]))
+
+                pol_ic[mask, :] = self.pol_ic
+                tor_ic[mask, :] = self.tor_ic
+
+                self.pol_ic = pol_ic
+                self.tor_ic = tor_ic
+        
+        if setup_SHT:
+            t1 = time.time()
+            self.n_theta_max = max(int(3*self.l_max/2), 128)
+            self.n_theta_max += self.n_theta_max % 2
+            self.n_phi_max = int(2*self.n_theta_max/self.minc)
+            self.sh = SpectralTransforms(l_max=self.l_max, minc=self.minc,
+                                         m_max=self.m_max,
+                                         n_theta_max=self.n_theta_max,
+                                         verbose=verbose)
+            self.colat = self.sh.colat
+            self.idx = self.sh.idx
+            self.ell = self.sh.ell
+            self.m = self.sh.m
+            t2 = time.time()
+            if verbose:
+                print('Time to set up the spectral transforms: {:.2e}'.format(t2-t1))
 
     def read(self, filename, field, endian, record_marker, ic=False,
              precision=np.float32):
@@ -207,7 +256,7 @@ class MagicPotential(MagicSetup):
 
                 # Read header
                 self.l_max, self.n_r_max, self.n_r_ic_max, self.minc, \
-                    self.lm_max = infile.fort_read('i4')
+                    self.lm_max = infile.fort_read(np.int32)
                 self.m_max = int((self.l_max/self.minc)*self.minc)
                 self.n_m_max = int(self.m_max/self.minc+1)
                 self.ra, self.ek, self.pr, self.prmag, self.radratio, \
@@ -220,23 +269,21 @@ class MagicPotential(MagicSetup):
                 self.radius = dat[:self.n_r_max]
                 self.rho0 = dat[self.n_r_max:]
 
-                # Read field in the outer core
-                self.pol = infile.fort_read(np.complex64)
-                self.pol = self.pol.reshape((self.n_r_max, self.lm_max))
-                self.pol = self.pol.T
+                # Read fields in the outer core
+                shape = (self.lm_max, self.n_r_max)
+                self.pol = infile.fort_read(np.complex64, shape=shape,
+                                            order='F')
                 if (field != 'T' and field != 'Xi'):
-                    self.tor = infile.fort_read(np.complex64)
-                    self.tor = self.tor.reshape((self.n_r_max, self.lm_max))
-                    self.tor = self.tor.T
+                    self.tor = infile.fort_read(np.complex64, shape=shape,
+                                                order='F')
 
-                # Read inner core
+                # Read fields in the inner core
                 if ic:
-                    self.pol_ic = infile.fort_read(np.complex64)
-                    self.pol_ic = self.pol_ic.reshape((self.n_r_ic_max, self.lm_max))
-                    self.pol_ic = self.pol_ic.T
-                    self.tor_ic = infile.fort_read(np.complex64)
-                    self.tor_ic = self.tor_ic.reshape((self.n_r_ic_max, self.lm_max))
-                    self.tor_ic = self.tor_ic.T
+                    shape = (self.lm_max, self.n_r_ic_max)
+                    self.pol_ic = infile.fort_read(np.complex64, shape=shape,
+                                                   order='F')
+                    self.tor_ic = infile.fort_read(np.complex64, shape=shape,
+                                                   order='F')
 
                 infile.close()
 
@@ -257,20 +304,16 @@ class MagicPotential(MagicSetup):
                 dt = np.dtype('{}5i4'.format(prefix))
                 self.n_r_max, self.n_r_ic_max, self.l_max, self.minc, \
                     self.lm_max = np.fromfile(f, dtype=dt, count=1)[0]
+                if self.version == 2:
+                    dt = np.dtype('{}2i4'.format(prefix))
+                    self.m_min, self.m_max = np.fromfile(f, dtype=dt,
+                                                         count=1)[0]
                 dt = np.dtype('{}2f4'.format(prefix))
                 self.omega_ic, self.omega_ma = \
                     np.fromfile(f, dtype=dt, count=1)[0]
                 dt = np.dtype("{}{}f4".format(prefix, self.n_r_max))
                 self.radius = np.fromfile(f, dtype=dt, count=1)[0]
                 self.rho0 = np.fromfile(f, dtype=dt, count=1)[0]
-
-                dt = np.dtype("{}({},{})c8".format(prefix, self.n_r_max,
-                                                   self.lm_max))
-                self.pol = np.fromfile(f, dtype=dt, count=1)[0]
-                self.pol = self.pol.T
-                if (field != 'T' and field != 'Xi'):
-                    self.tor = np.fromfile(f, dtype=dt, count=1)[0]
-                    self.tor = self.tor.T
 
                 dt = np.dtype("{}({},{})c8".format(prefix, self.n_r_max,
                                                    self.lm_max))
@@ -287,7 +330,6 @@ class MagicPotential(MagicSetup):
                     self.pol_ic = self.pol_ic.T
                     self.tor_ic = np.fromfile(f, dtype=dt, count=1)[0]
                     self.tor_ic = self.tor_ic.T
-
 
                 f.close()
 
@@ -316,6 +358,9 @@ class MagicPotential(MagicSetup):
             self.sigma_ratio = Prd.sigma_ratio
             self.prmag = Prd.prmag
             self.pr = Prd.pr
+            if self.version == 2:
+                self.m_min = Prd.m_min
+                self.m_max = Prd.m_max
             self.omega_ic = Prd.omega_ic
             self.omega_ma = Prd.omega_ma
             self.radius = Prd.radius
@@ -367,6 +412,9 @@ class MagicPotential(MagicSetup):
         :type normed: bool
         """
 
+        if field in ('temperature', 'entropy', 's', 'S', 'u2', 'b2', 'nrj'):
+            normed = False
+
         phiavg = np.zeros((self.n_theta_max, self.n_r_max), np.float32)
         t1 = time.time()
         if field in ('T', 'temp', 'S', 'entropy'):
@@ -384,7 +432,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vr'
         elif field in ('vt', 'Vt', 'ut', 'Ut', 'utheta', 'vtheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 vt, vp = self.sh.spec_spat(field[:, i], self.tor[:, i],
                                            l_axi=True)
@@ -394,7 +442,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vtheta'
         elif field in ('vp', 'Vp', 'up', 'Up', 'uphi', 'vphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 vt, vp = self.sh.spec_spat(field[:, i], self.tor[:, i],
                                            l_axi=True)
@@ -413,7 +461,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'br'
         elif field in ('bt', 'Bt', 'Btheta', 'btheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 bt, bp = self.sh.spec_spat(field[:, i], self.tor[:, i],
                                            l_axi=True)
@@ -423,7 +471,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Btheta'
         elif field in ('bp', 'Bp', 'bphi', 'Bphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 bt, bp = self.sh.spec_spat(field[:, i], self.tor[:, i],
                                            l_axi=True)
@@ -434,9 +482,6 @@ class MagicPotential(MagicSetup):
                 label = 'Bphi'
         t2 = time.time()
         print('Transform time (avg): {:.2f}'.format(t2-t1))
-
-        if field in ('temperature', 'entropy', 's', 'S', 'u2', 'b2', 'nrj'):
-            normed = False
 
         fig, xx, yy, im = merContour(phiavg, self.radius, label, levels, cm,
                                      normed, vmax, vmin, cbar, tit)
@@ -477,6 +522,10 @@ class MagicPotential(MagicSetup):
         :type normed: bool
         """
 
+        if field in ('temperature', 't', 'T', 'entropy', 's', 'S', 'u2',
+                     'b2', 'nrj'):
+            normed = False
+
         equator = np.zeros((self.n_phi_max, self.n_r_max), np.float32)
         t1 = time.time()
         if field in ('temperature', 't', 'T', 'entropy', 's', 'S'):
@@ -493,7 +542,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vr'
         elif field in ('vt', 'Vt', 'ut', 'Ut', 'vtheta', 'utheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 vt, vp = self.sh.spec_spat_equat(field[:, i], self.tor[:, i])
                 equator[:, i] = vt/self.radius[i]/self.rho0[i]
@@ -502,7 +551,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vtheta'
         elif field in ('vp', 'Vp', 'up', 'Up', 'vphi', 'uphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 vt, vp = self.sh.spec_spat_equat(field[:, i], self.tor[:, i])
                 equator[:, i] = vp/self.radius[i]/self.rho0[i]
@@ -519,7 +568,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Br'
         elif field in ('bt', 'Bt', 'Btheta', 'btheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 bt, bp = self.sh.spec_spat_equat(field[:, i], self.tor[:, i])
                 equator[:, i] = bt/self.radius[i]
@@ -528,7 +577,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Btheta'
         elif field in ('bp', 'Bp', 'Bphi', 'bphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             for i in range(self.n_r_max):
                 bt, bp = self.sh.spec_spat_equat(field[:, i], self.tor[:, i])
                 equator[:, i] = bp/self.radius[i]
@@ -541,19 +590,16 @@ class MagicPotential(MagicSetup):
 
         equator = symmetrize(equator, self.minc)
 
-        if field in ('temperature', 't', 'T', 'entropy', 's', 'S', 'u2',
-                     'b2', 'nrj'):
-            normed = False
-
-        fig, xx, yy = equatContour(equator, self.radius, self.minc, label,
-                                   levels, cm, normed, vmax, vmin, cbar, tit,
-                                   normRad)
+        fig, xx, yy, im = equatContour(equator, self.radius, self.minc, label,
+                                       levels, cm, normed, vmax, vmin, cbar, tit,
+                                       normRad)
         ax = fig.get_axes()[0]
 
         # Variable conductivity: add a dashed line
         if hasattr(self, 'nVarCond'):
             if self.nVarCond == 2:
                 radi = self.con_RadRatio * self.radius[0]
+                phi = np.linspace(0., 2*np.pi, self.n_phi_max)
                 ax.plot(radi*np.cos(phi), radi*np.sin(phi), 'k--', lw=1.5)
 
     def surf(self, field='vr', proj='hammer', lon_0=0., r=0.85, vmax=None,
@@ -603,6 +649,10 @@ class MagicPotential(MagicSetup):
         :type normed: bool
         """
 
+        if field in ('temperature', 't', 'T', 'entropy', 's', 'S', 'u2',
+                     'b2', 'nrj'):
+            normed = False
+
         r /= (1-self.radratio)  # as we give a normalised radius
         ind = np.nonzero(np.where(abs(self.radius-r) ==
                          min(abs(self.radius-r)), 1, 0))
@@ -623,7 +673,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vr'
         elif field in ('vt', 'Vt', 'ut', 'Ut', 'vtheta', 'utheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             field = field[:, indPlot]
             vt, vp = self.sh.spec_spat(field, self.tor[:, indPlot])
             rprof = vt/self.radius[indPlot]/self.rho0[indPlot]
@@ -632,7 +682,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'vtheta'
         elif field in ('vp', 'Vp', 'up', 'Up', 'uphi', 'vphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             field = field[:, indPlot]
             vt, vp = self.sh.spec_spat(field, self.tor[:, indPlot])
             rprof = vp/self.radius[indPlot]/self.rho0[indPlot]
@@ -649,7 +699,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Br'
         elif field in ('bt', 'Bt', 'Btheta', 'btheta'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             field = field[:, indPlot]
             bt, bp = self.sh.spec_spat(field, self.tor[:, indPlot])
             rprof = bt/self.radius[indPlot]
@@ -658,7 +708,7 @@ class MagicPotential(MagicSetup):
             else:
                 label = 'Btheta'
         elif field in ('bp', 'Bp', 'bphi', 'Bphi'):
-            field = rderavg(self.pol, self.radratio, spectral=self.rcheb)
+            field = rderavg(self.pol, self.radius)
             field = field[:, indPlot]
             bt, bp = self.sh.spec_spat(field, self.tor[:, indPlot])
             rprof = bp/self.radius[indPlot]
@@ -671,12 +721,8 @@ class MagicPotential(MagicSetup):
 
         rprof = symmetrize(rprof, self.minc)
 
-        if field in ('temperature', 't', 'T', 'entropy', 's', 'S', 'u2',
-                     'b2', 'nrj'):
-            normed = False
-
-        fig = radialContour(rprof, rad, label, proj, lon_0, vmax, vmin,
-                            lat_0, levels, cm, normed, cbar, tit, lines)
+        fig, xx, yy, im = radialContour(rprof, rad, label, proj, lon_0, vmax, vmin,
+                                        lat_0, levels, cm, normed, cbar, tit, lines)
 
 
 if __name__ == '__main__':

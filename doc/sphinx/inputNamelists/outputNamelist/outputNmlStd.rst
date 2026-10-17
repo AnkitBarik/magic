@@ -154,7 +154,7 @@ Specific inputs
 * **l_movie** (default :f:var:`l_movie=.false. <l_movie>`) is a logical. It needs to be turned on to get movie computed.
 
   Several movie-files can be produced during a run (it is now limited to 30 by
-  the variable``n_movies_max`` in the module :f:mod:`movie`). The movies are
+  the variable ``n_movies_max`` in the module :f:mod:`movie`). The movies are
   defined by a keyword determining the fields to be plotted and an expression
   that determines the nature of movie (:math:`r`-slice, :math:`\theta`-slice,
   :math:`\phi`-slice, etc.). The code searches this information in a
@@ -225,7 +225,9 @@ Specific inputs
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
   | AX[ISYMMETRIC] V or AV                          | Axisymmetric component of the velocity field for :math:`\phi=cst.`                                                                              |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
-  | Vz                                              | Vertical component of the velocity  at the equator + vertical component of the vorticity at the equator (closest point to equator).             |
+  | Vz                                              | Vertical component of the velocity :math:`u_z`.                                                                                                 |
+  +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
+  | Vs                                              | Cylindrical radil component of the velocity :math:`u_s`.                                                                                        |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
   | Voz                                             | Vertical component of the vorticity :math:`\omega_z`.                                                                                           |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -240,6 +242,12 @@ Specific inputs
   | Heat t[ransport]                                | Radial advection of temperature :math:`u_r\frac{\partial s}{\partial r}`                                                                        |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
   | HEATF AX[iSYMMETRIC]                            | Conducting heat flux :math:`\partial s /\partial r`                                                                                             |
+  +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
+  | Voz geos                                        | Vertical component of the vorticity :math:`\omega_z` averaged over the rotation axis.                                                           |
+  +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
+  | Vs geos                                         | Cylindrical radial component of the velocity :math:`u_s` averaged over the rotation axis.                                                       |
+  +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
+  | Vp geos                                         | Azimuthal component of the velocity :math:`u_\phi` averaged over the rotation axis.                                                             |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
   | FL Pro                                          | Axisymmetric field line stretching.                                                                                                             |
   +-------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -372,15 +380,18 @@ Standard inputs
 * **t_movie_stop** (default :f:var:`t_movie_stop=0.0 <t_movie_stop>`) is a real, which defines the time to stop writing movie outputs.
 
 
-.. _varl_average:
-
 Field Averages
 --------------
 
 The code can perform on-the-fly time-averaging of entropy, velocity field and magnetic field. Respective graphic output and spectra are written into the corresponding files (with :ref:`G_ave.TAG <secGraphFile>`, :ref:`kin_spec_ave.TAG <secKinSpecAveFile>`,  :ref:`mag_spec_ave.TAG <secMagSpecAveFile>`). The time-averaged energies are written into the :ref:`log.TAG <secLogFile>` file.
 
 
+.. _varl_average:
+
 * **l_average** (default :f:var:`l_average=.false. <l_average>`) is a logical, which enables the time-averaging of fields when set to ``.true.``.
 
   .. warning:: Time-averaging has a large memory imprint as it requires the storage of 3-D arrays. Be careful, when using large truncations.
 
+.. _varl_spec_avg:
+
+* **l_spec_avg** (default :f:var:`l_spec_avg=.false. <l_spec_avg>`) is a logical, which enables the time-averaging of spectra when set to ``.true.``. It is always set to ``.true.``, if :ref:`l_average=.true. <varl_average>`.

@@ -18,12 +18,6 @@ IO: RMS force balance, torsional oscillations, misc
 
 .. f:automodule:: dtb_mod
 
-``dtB_arrays.f90``
-------------------
-
-.. f:automodule:: dtb_arrays_mod
-
-
 ``out_dtB_frame.f90``
 ---------------------
 
@@ -33,17 +27,6 @@ IO: RMS force balance, torsional oscillations, misc
 ----------
 
 .. f:automodule:: torsional_oscillations
-
-``TO_helpers.f90``
-------------------
-
-.. f:automodule:: to_helpers
-
-``TO_arrays.f90``
------------------
-
-.. f:automodule:: to_arrays_mod
-
 
 ``out_TO.f90``
 --------------
@@ -58,23 +41,8 @@ IO: RMS force balance, torsional oscillations, misc
 ``outGeos.f90``
 ---------------
 
-.. f:automodule:: geos_mod
+.. f:automodule:: geos
 
-
-``chebInt.f90``
----------------
-
-.. f:automodule:: chebint_mod
-
-``outOmega.f90``
-----------------
-
-.. f:automodule:: omega
-
-``nl_special_calc.f90``
------------------------
-
-.. f:automodule:: nl_special_calc
 
 ``probes.f90``
 --------------

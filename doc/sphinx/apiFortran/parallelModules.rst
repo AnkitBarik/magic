@@ -22,4 +22,9 @@ MPI related modules
 ``mpi_transpose.f90``
 ----------------------
 
-.. f:automodule:: mpi_transp
+.. f:automodule:: mpi_transp_mod
+
+``parallel_solvers.f90``
+------------------------
+
+.. f:automodule:: parallel_solvers
