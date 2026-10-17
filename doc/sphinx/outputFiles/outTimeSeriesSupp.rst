@@ -133,6 +133,16 @@ This file contains the power budget diagnostic. This file is computed by the sub
    +---------------+------------------------------------------------------------------+
    | 11            | Time variation of total power                                    |
    +---------------+------------------------------------------------------------------+
+   | 12            | Work done by the Poincaré force (precession), included in the    |
+   |               | total power                                                      |
+   +---------------+------------------------------------------------------------------+
+
+.. note:: For precession computed in the fluid frame
+          (``precession_frame="fluid"``), the columns 8 and 9
+          contain the power delivered to the fluid by the prescribed rotation of the
+          mantle and of the inner core about their tilted axis
+          (:math:`\vec{\Omega}\cdot\vec{\Gamma}`, all three components of the
+          viscous torque), and column 12 is zero.
 
 This file can be read using :py:class:`MagicTs <magic.MagicTs>` with the following options:
 

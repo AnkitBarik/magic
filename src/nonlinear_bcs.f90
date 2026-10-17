@@ -6,13 +6,11 @@ module nonlinear_bcs
    use truncation, only: n_phi_max, l_max, nlat_padded, lm_max
    use radial_data, only: n_r_cmb, n_r_icb
    use radial_functions, only: r_cmb, r_icb, rho0
-   use physical_parameters, only: sigma_ratio, conductance_ma, prmag, oek, &
-       &                          po, prec_angle
-   use horizontal_data, only: cosTheta, sinTheta_E2, phi, sinTheta, O_sin_theta
-   use constants, only: one, two, y10_norm, y11_norm, zero
+   use physical_parameters, only: sigma_ratio, conductance_ma, prmag, oek
+   use horizontal_data, only: cosTheta, sinTheta_E2, phi, sinTheta
+   use constants, only: two, y10_norm, y11_norm, zero
    use useful, only: abortRun
    use special, only: l_vr_cmb, l_vr_icb
-   use logic, only: l_prec_fluid_frame
    use sht, only: spat_to_sphertor
 
    implicit none
@@ -120,17 +118,13 @@ contains
    end subroutine get_b_nl_bcs
 !-------------------------------------------------------------------------
    subroutine v_rigid_boundary(nR,omega,lDeriv,vrr,vtr,vpr,cvrr,dvrdtr, &
-              &                dvrdpr,dvtdpr,dvpdpr,time)
+              &                dvrdpr,dvtdpr,dvpdpr)
       !
       !  Purpose of this subroutine is to set the velocities and their
       !  derivatives at a fixed boundary.
       !  While ``vt`` is zero, since we only allow for rotation about the
       !  :math:`z`-axis, ``vp= r \sin(theta) v_phi = r**2 sin(theta)**2 omega``
       !  and ``cvr= r**2 * radial component of (\curl v) = r**2  2 cos(theta) omega``
-      !  For precession in the fluid frame, the boundary also rotates about an
-      !  equatorial axis (omx, omy) and ``vt`` is non-zero. The equatorial
-      !  axis turns at the inertial precession rate po*oek minus the
-      !  frame rotation rate oek, i.e. at (po-1)*oek.
       !
 
       !-- Input of variables:
@@ -139,7 +133,6 @@ contains
 
       !-- Input of boundary rotation rate
       real(cp), intent(in) :: omega         ! boundary rotation rate
-      real(cp), intent(in) :: time          ! time (phase of precession in fluid frame)
 
       !-- output:
       real(cp), intent(out) :: vrr(:,:), vpr(:,:), vtr(:,:)
@@ -148,7 +141,6 @@ contains
 
       !-- Local variables:
       real(cp) :: r2
-      real(cp) :: omx, omy, cosPhi, sinPhi
       integer :: nPhi
       logical :: l_vr
 
@@ -165,31 +157,17 @@ contains
          return
       end if
 
-      if ( l_prec_fluid_frame ) then
-         omx = oek * sin(prec_angle) * cos((po-one) * oek * time)
-         omy = oek * sin(prec_angle) * sin((po-one) * oek * time)
-      else
-         omx = 0.0_cp
-         omy = 0.0_cp
-      end if
-
-      !$omp parallel do default(shared) private(cosPhi,sinPhi)
+      !$omp parallel do default(shared)
       do nPhi=1,n_phi_max
-         cosPhi = cos(phi(nPhi))
-         sinPhi = sin(phi(nPhi))
          if ( .not. l_vr ) vrr(:,nPhi)=0.0_cp
-         vtr(:,nPhi)=r2*rho0(nR)*sinTheta(:)*(-omx*sinPhi+omy*cosPhi)
-         vpr(:,nPhi)=r2*rho0(nR)*sinTheta_E2(:)*omega -               &
-         &           r2*rho0(nR)*sinTheta(:)*cosTheta(:)*             &
-         &           (omx*cosPhi+omy*sinPhi)
+         vtr(:,nPhi)=0.0_cp
+         vpr(:,nPhi)=r2*rho0(nR)*sinTheta_E2(:)*omega
          if ( lDeriv ) then
-            cvrr(:,nPhi)  =r2*rho0(nR)*( two*cosTheta(:)*omega -      &
-            &              O_sin_theta(:)*(cosTheta(:)**2-sinTheta_E2(:))* &
-            &              (omx*cosPhi+omy*sinPhi) )
+            cvrr(:,nPhi)  =r2*rho0(nR)*two*cosTheta(:)*omega
             dvrdtr(:,nPhi)=0.0_cp
             dvrdpr(:,nPhi)=0.0_cp
-            dvtdpr(:,nPhi)=r2*rho0(nR)*(omx*cosPhi+omy*sinPhi)
-            dvpdpr(:,nPhi)=r2*rho0(nR)*(omx*sinPhi-omy*cosPhi)*cosTheta(:)
+            dvtdpr(:,nPhi)=0.0_cp
+            dvpdpr(:,nPhi)=0.0_cp
          end if
       end do
       !$omp end parallel do

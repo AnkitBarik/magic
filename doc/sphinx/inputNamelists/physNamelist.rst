@@ -45,6 +45,11 @@ Dimensionless control parameters
 
 * **prec_angle** (default :f:var:`prec_angle=23.5 <prec_angle>`) is a real. This is the angle between the precession and the rotation axes expressed in degrees.
 
+* **precession_frame** (default :f:var:`precession_frame="mantle" <precession_frame>`) is a character string. It selects the frame in which precession is computed:
+
+  - ``precession_frame="mantle"``: frame attached to the mantle, with the Poincaré force.
+  - ``precession_frame="fluid"``: frame rotating at :math:`1/E` about the precession axis. The mantle and the inner core rotate about an axis tilted by ``prec_angle`` from it, which precesses at the rate ``po``; this motion is imposed through the no-slip boundary conditions.
+
 * **radratio** (default :f:var:`radratio=0.35 <radratio>`) is a real. This is the ratio of the inner core radius :math:`r_i` to the outer core radius :math:`r_o`:
 
   .. math::
