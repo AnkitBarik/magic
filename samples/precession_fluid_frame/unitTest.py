@@ -95,8 +95,12 @@ class PrecessionFluidFrameTest(unittest.TestCase):
     def outputFileDiff(self):
         datRef = readData('{}/reference.out'.format(self.dir))
         datTmp = readData('{}/e_kin.test'.format(self.dir))
-        np.testing.assert_allclose(datRef, datTmp, rtol=self.precision, 
-                                   atol=1e-20)
+        # In the fluid frame the toroidal energy is dominated by the rigid
+        # rotation (~1e6): small quantities such as the axisymmetric poloidal
+        # energy come from a near cancellation of large terms and their last
+        # printed digit depends on the compiler, hence a slightly looser rtol
+        np.testing.assert_allclose(datRef, datTmp,
+                                   rtol=max(self.precision, 1e-6), atol=1e-20)
 
         # The same problem computed in the mantle frame (precession test):
         # the poloidal kinetic energy does not depend on the frame and agrees
