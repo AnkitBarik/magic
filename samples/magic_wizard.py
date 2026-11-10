@@ -9,7 +9,6 @@ import testOutputs.unitTest
 import testRadialOutputs.unitTest
 import boussBenchSat.unitTest
 import precession.unitTest
-import precession_fluid_frame.unitTest
 import dynamo_benchmark.unitTest
 import full_sphere.unitTest
 import varProps.unitTest
@@ -32,7 +31,7 @@ import testRMSOutputs.unitTest
 import testGraphMovieOutputs.unitTest
 import testdtBMovieOutputs.unitTest
 import testTOGeosOutputs.unitTest
-import tides_radial_velocity.unitTest
+import tides_potential_flow.unitTest
 
 __version__ = '1.0'
 
@@ -47,6 +46,11 @@ def getParser():
                         help="Show program's version number and exit.")
     parser.add_argument('--level', action='store', dest='test_level', type=int,
                         default=-1, help='Test level, use -2 for more info')
+    parser.add_argument('--test', action='extend', nargs='+', dest='tests',
+                        metavar='DIR', default=None,
+                        help='Only run the tests in these sample directories '
+                             '(e.g. --test dynamo_benchmark testRestart). '
+                             'Combines with --level.')
     parser.add_argument('--use-debug-flags', action='store_true',
                         dest='use_debug_flags',
                         default=False, help='Use compilation debug flags')
@@ -193,12 +197,14 @@ def get_exec_cmd(args, execDir):
     magicExec = '{}/magic.exe'.format(execDir)
 
     if args.use_mpi:  # With MPI
+        # Intel MPI disables pinning by default on hybrid CPUs
+        os.environ['I_MPI_PIN'] = '1'
         if args.use_openmp:
             os.environ['OMP_NUM_THREADS'] = str(args.nthreads)
             os.environ['KMP_STACKSIZE'] = '1g'
             os.environ['KMP_AFFINITY'] = 'noverbose,granularity=core,compact'
             os.environ['MP_BINDPROC'] = 'no'
-            os.environ['I_MPI_PIN_PROCESSOR_LIST'] = 'socket'
+            os.environ['I_MPI_PIN_DOMAIN'] = 'omp'
         else:
             os.environ['I_MPI_PIN_PROCESSOR_LIST'] = 'allcores'
 
@@ -269,12 +275,6 @@ def getSuite(startdir, cmd, precision, args):
         suite.addTest(precession.unitTest.PrecessionTest(
                                          'outputFileDiff',
                                          '{}/precession'.format(startdir),
-                                         execCmd=cmd,
-                                         precision=precision))
-        # Precession in the fluid frame with Po=-0.01
-        suite.addTest(precession_fluid_frame.unitTest.PrecessionFluidFrameTest(
-                                         'outputFileDiff',
-                                         '{}/precession_fluid_frame'.format(startdir),
                                          execCmd=cmd,
                                          precision=precision))
         # First full sphere benchmark from Marti et al. (2014)
@@ -371,13 +371,43 @@ def getSuite(startdir, cmd, precision, args):
                                         'outputFileDiff',
                                         '{}/testdtBMovieOutputs'.format(startdir),
                                         execCmd=cmd))
-        # Tides: radial velocity
-        suite.addTest(tides_radial_velocity.unitTest.TidesTest('outputFileDiff',
-                                         '{}/tides_radial_velocity'.format(startdir),
+        # Tides: potential flow driven by the tidal motion of the boundary
+        suite.addTest(tides_potential_flow.unitTest.TidesTest('outputFileDiff',
+                                         '{}/tides_potential_flow'.format(startdir),
                                          execCmd=cmd,
-                                         precision=precision))
+                                         precision=1e-5))
 
     return suite
+
+
+def filterSuite(suite, startdir, args):
+    """
+    Only keep the tests whose sample directory is in args.tests
+    """
+    if not args.tests:
+        return suite
+
+    names = [os.path.basename(os.path.normpath(n)) for n in args.tests]
+    level = args.test_level
+    args.test_level = -1
+    known = {os.path.basename(t.dir) for t in getSuite(startdir, '', 0., args)}
+    args.test_level = level
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        print('Unknown test(s): {}'.format(', '.join(unknown)))
+        print('Available: {}'.format(', '.join(sorted(known))))
+        sys.exit(1)
+
+    filtered = unittest.TestSuite()
+    for t in suite:
+        if os.path.basename(t.dir) in names:
+            filtered.addTest(t)
+    if filtered.countTestCases() == 0:
+        print('No test matching {} at level {}'.format(', '.join(names), level))
+        sys.exit(1)
+
+    return filtered
+
 
 def printLevelInfo():
 
@@ -422,7 +452,7 @@ def printLevelInfo():
         print("                    Test r.m.s. force balance calculation                          ")
         print("                    Test Graphic and Movie outputs                                 ")
         print("                    Test TO and Geos outputs                                       ")
-        print("                    Test Tides: radial velocity                                    ")
+        print("                    Test Tides: potential flow (lateral tidal motion)              ")
         print("                                                                                   ")
 
 if __name__ == '__main__':
@@ -446,6 +476,9 @@ if __name__ == '__main__':
         printLevelInfo()
         sys.exit()
 
+    # Select the tests before building, so that typos fail early
+    suite = filterSuite(getSuite(startdir, '', precision, args), startdir, args)
+
     # Run cmake
     print('1. cmake configuration')
     print('----------------------')
@@ -462,7 +495,7 @@ if __name__ == '__main__':
     # Run the auto-test suite
     print('3.   Auto-tests       ')
     print('----------------------')
-    suite = getSuite(startdir, cmd, precision, args)
+    suite = filterSuite(getSuite(startdir, cmd, precision, args), startdir, args)
     runner = unittest.TextTestRunner(verbosity=0)
     ret = not runner.run(suite).wasSuccessful()
 

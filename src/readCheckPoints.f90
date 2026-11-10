@@ -7,6 +7,7 @@ module readCheckPoints
    use iso_fortran_env, only: output_unit
    use precision_mod
    use parallel_mod
+   use mpi_transp_mod, only: type_mpitransp
    use communications, only: scatter_from_rank0_to_lo, lo2r_one
    use fields, only: dw_LMloc, ddw_LMloc, ds_LMloc, dp_LMloc, dz_LMloc,   &
        &             dxi_LMloc, db_LMloc, ddb_LMloc, dj_LMloc, ddj_LMloc, &
@@ -17,7 +18,8 @@ module readCheckPoints
    use logic, only: l_rot_ma,l_rot_ic,l_SRIC,l_SRMA,l_cond_ic,l_heat,l_mag,    &
        &            l_mag_LF, l_chemical_conv, l_AB1, l_bridge_step,           &
        &            l_double_curl, l_z10Mat, l_single_matrix, l_parallel_solve,&
-       &            l_mag_par_solve, l_phase_field, l_prec_fluid_frame
+       &            l_mag_par_solve, l_phase_field, l_precession,              &
+       &            l_prec_ic_tilt
    use blocking, only: lo_map, lm2l, lm2m, lm_balance, llm, ulm, llmMag, &
        &               ulmMag, st_map
    use init_fields, only: start_file,inform,tOmega_ic1,tOmega_ic2,             &
@@ -25,7 +27,7 @@ module readCheckPoints
        &                  omega_ic2,omegaOsz_ic2,omega_ma1,omegaOsz_ma1,       &
        &                  omega_ma2,omegaOsz_ma2,tShift_ic1,tShift_ic2,        &
        &                  tShift_ma1,tShift_ma2,tipdipole, scale_b, scale_v,   &
-       &                  scale_s,scale_xi, omega_prec
+       &                  scale_s,scale_xi, omega_prec_ic, get_omega_eq_ic
    use radial_functions, only: rscheme_oc, chebt_ic, cheb_norm_ic, r
    use num_param, only: alph1, alph2, alpha
    use radial_data, only: n_r_icb, n_r_cmb
@@ -33,14 +35,14 @@ module readCheckPoints
        &                          kbotv, ktopv, sc, raxi, LFfac
    use constants, only: c_z10_omega_ic, c_z10_omega_ma, pi, zero, two, &
        &                one, c_lorentz_ma, c_lorentz_ic, c_moi_ic,     &
-       &                c_moi_ma
+       &                c_moi_ma, c_z11_omega_ic
    use chebyshev, only: type_cheb_odd
    use radial_scheme, only: type_rscheme
    use finite_differences, only: type_fd
    use cosine_transform_odd, only: costf_odd_t
    use useful, only: polynomial_interpolation, abortRun
    use updateWP_mod, only: get_pol_rhs_imp
-   use updateZ_mod, only: get_tor_rhs_imp
+   use updateZ_mod, only: get_tor_rhs_imp, update_prec_force
    use updateS_mod, only: get_entropy_rhs_imp
    use updateXI_mod, only: get_comp_rhs_imp
    use updateB_mod, only: get_mag_rhs_imp, get_mag_ic_rhs_imp
@@ -418,7 +420,8 @@ contains
          if ( .not. l_double_curl ) dpdt%expl(:,:,2)=dpdt%expl(:,:,2)+coex*dpdt%impl(:,:,1)
          if ( l_heat ) dsdt%expl(:,:,2)=dsdt%expl(:,:,2)+coex*dsdt%impl(:,:,1)
 
-         call get_tor_rhs_imp(time, z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
+         if ( l_precession ) call update_prec_force(time)
+         call get_tor_rhs_imp(z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
               &               omega_ic, omega_ma, omega_ic1, omega_ma1, tscheme, 1,&
               &               .true., .false.)
          dzdt%expl(:,:,2)=dzdt%expl(:,:,2)+coex*dzdt%impl(:,:,1)
@@ -1415,7 +1418,8 @@ contains
          end if
          if ( l_heat) dsdt%expl(:,:,2)=dsdt%expl(:,:,2)+coex*dsdt%impl(:,:,1)
 
-         call get_tor_rhs_imp(time, z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
+         if ( l_precession ) call update_prec_force(time)
+         call get_tor_rhs_imp(z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
               &               omega_ic, omega_ma, omega_ic1, omega_ma1, tscheme, 1,&
               &               .true., .false.)
          dzdt%expl(:,:,2)=dzdt%expl(:,:,2)+coex*dzdt%impl(:,:,1)
@@ -2257,7 +2261,8 @@ contains
          if ( .not. l_double_curl ) dpdt%expl(:,:,2)=dpdt%expl(:,:,2)+coex*dpdt%impl(:,:,1)
          if ( l_heat ) dsdt%expl(:,:,2)=dsdt%expl(:,:,2)+coex*dsdt%impl(:,:,1)
 
-         call get_tor_rhs_imp(time, z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
+         if ( l_precession ) call update_prec_force(time)
+         call get_tor_rhs_imp(z, dz_LMloc, dzdt, domega_ma_dt, domega_ic_dt, &
               &               omega_ic, omega_ma, omega_ic1, omega_ma1, tscheme, 1,&
               &               .true., .false.)
          dzdt%expl(:,:,2)=dzdt%expl(:,:,2)+coex*dzdt%impl(:,:,1)
@@ -3104,7 +3109,7 @@ contains
 
       !-- Local variables
       real(cp) :: fr
-      integer :: lm, nR, l1m0
+      integer :: lm, nR, l1m0, l1m1
 
 
       !-- If mapping towards reduced symmetry, add thermal perturbation in
@@ -3158,8 +3163,7 @@ contains
             tOmega_ic1=time+tShift_ic1
             tOmega_ic2=time+tShift_ic2
             omega_ic=omega_ic1*cos(omegaOsz_ic1*tOmega_ic1) + &
-            &        omega_ic2*cos(omegaOsz_ic2*tOmega_ic2)
-            if ( l_prec_fluid_frame ) omega_ic = omega_ic + omega_prec
+            &        omega_ic2*cos(omegaOsz_ic2*tOmega_ic2) + omega_prec_ic
             if ( rank == 0 ) then
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed inner core rotation rate:'
@@ -3168,6 +3172,11 @@ contains
             if ( kbotv == 2 ) then
                if ( llm<=l1m0 .and. ulm>=l1m0 ) then
                   z(l1m0,n_r_icb)=cmplx(omega_ic/c_z10_omega_ic,0.0_cp,kind=cp)
+               end if
+               !-- Equatorial rotation of a tilted inner core (precession)
+               l1m1=lo_map%lm2(1,1)
+               if ( l_prec_ic_tilt .and. llm<=l1m1 .and. ulm>=l1m1 ) then
+                  z(l1m1,n_r_icb)=get_omega_eq_ic(time)/c_z11_omega_ic
                end if
             end if
          else
@@ -3187,7 +3196,6 @@ contains
             tOmega_ma2=time+tShift_ma2
             omega_ma=omega_ma1*cos(omegaOsz_ma1*tOmega_ma1) + &
             &        omega_ma2*cos(omegaOsz_ma2*tOmega_ma2)
-            if ( l_prec_fluid_frame ) omega_ma = omega_ma + omega_prec
             if ( rank == 0 ) then
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed mantle rotation rate:'

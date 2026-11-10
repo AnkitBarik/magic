@@ -15,22 +15,20 @@ module power
        &                       O_r_ic, rgrav, r_ic, dr_fac_ic,        &
        &                       alpha0, orho1, otemp1, beta, visc
    use physical_parameters, only: kbotv, ktopv, opm, LFfac, BuoFac, &
-       &                          ChemFac, ThExpNb, ViscHeatFac,    &
-       &                          po, prec_angle, oek
+       &                          ChemFac, ThExpNb, ViscHeatFac
    use num_param, only: tScale, eScale
    use blocking, only: lo_map, st_map, llm, ulm, llmMag, ulmMag
    use horizontal_data, only: dLh, gauss, O_sin_theta_E2, cosn_theta_E2
    use logic, only: l_rot_ic, l_SRIC, l_rot_ma, l_SRMA, l_save_out, &
        &            l_conv, l_cond_ic, l_heat, l_mag,               &
-       &            l_chemical_conv, l_anelastic_liquid, l_precession, &
-       &            l_prec_fluid_frame
+       &            l_chemical_conv, l_anelastic_liquid, l_precession
    use output_data, only: tag
    use mean_sd, only: mean_sd_type
    use useful, only: cc2real, cc22real, round_off
    use integration, only: rInt_R, rIntIC
    use outRot, only: get_viscous_torque
-   use constants, only: zero, one, two, half, pi, third, c_z10_omega_ic, &
-       &                c_z10_omega_ma, c_z11_omega_ic, c_z11_omega_ma
+   use updateZ_mod, only: prec_force
+   use constants, only: one, two, half, pi, third
 
    implicit none
 
@@ -97,9 +95,7 @@ contains
       !  the rotation rates of inner core or mantle are prescribed
       !  and kept fixed.
       !  The losses are due to Ohmic and viscous dissipation.
-      !  With precession, the Poincare force also does work on the fluid
-      !  (mantle frame), or the tilted boundaries do work through the
-      !  viscous torques (fluid frame).
+      !  With precession, the Poincare force also does work on the fluid.
       !  If inner core and mantel are allowed to change their
       !  rotation rates due to viscous forces this power is not
       !  lost from the system and has to be respected.
@@ -135,8 +131,6 @@ contains
       real(cp) :: r_ratio
       real(cp) :: viscHeatR_global(n_r_max)
       real(cp) :: curlB2,buoy,curlB2_IC,buoy_chem,viscHeat,precPower
-      real(cp) :: prec_fac
-      complex(cp) :: prec_force
       real(cp) :: prec_r(n_r_max),prec_r_global(n_r_max)
       real(cp) :: curlB2_r(n_r_max),curlB2_r_global(n_r_max)
       real(cp) :: buoy_r(n_r_max),buoy_r_global(n_r_max)
@@ -144,7 +138,6 @@ contains
       real(cp) :: curlB2_rIC(n_r_ic_max),curlB2_rIC_global(n_r_ic_max)
       real(cp) :: viscous_torque_ic,viscous_torque_ma
       real(cp) :: z10ICB,z10CMB,drz10ICB,drz10CMB
-      complex(cp) :: z11ICB,z11CMB,drz11ICB,drz11CMB
       real(cp) :: powerIC,powerMA
       real(cp) :: powerDiffOld,powerDiffT
       complex(cp) :: laplace,Bh
@@ -154,12 +147,7 @@ contains
       !-- Poincare force for precession: it only acts on z(l=1,m=1) as
       !-- d/dt(dLh*z/r**2) = prec_force (see updateZ), hence its power is
       !-- eScale*Int( r**2/rho*cc22real(z11,prec_force) dr )
-      if ( l_precession ) then
-         prec_fac=sqrt(8.0_cp*pi*third)*po*oek*oek*sin(prec_angle)
-         prec_force=prec_fac*cmplx(sin(oek*time),-cos(oek*time),kind=cp)
-      else
-         prec_force=zero
-      end if
+      !-- prec_force has been computed in step_time for the current time
 
       do n_r=1,n_r_max
 
@@ -315,13 +303,6 @@ contains
          drz10CMB=0.0_cp
       end if
 
-      if ( l_prec_fluid_frame ) then
-         call send_lm_pair_to_master(z(:,n_r_icb),1,1,z11ICB)
-         call send_lm_pair_to_master(dz(:,n_r_icb),1,1,drz11ICB)
-         call send_lm_pair_to_master(z(:,n_r_cmb),1,1,z11CMB)
-         call send_lm_pair_to_master(dz(:,n_r_cmb),1,1,drz11CMB)
-      end if
-
       if ( rank== 0 ) then
          if ( l_conv ) then
             viscDiss= -viscHeat
@@ -369,22 +350,6 @@ contains
             powerMA=omega_MA*(-viscous_torque_ma+lorentz_torque_ma)
          else
             powerMA=0.0_cp
-         end if
-
-         !--- Precession in the fluid frame: mantle and inner core rotate
-         !--- with a prescribed motion about a tilted axis. The viscous torques
-         !--- then have all three components, and powerMA and powerIC are
-         !--- the power delivered to the fluid by the mantle and inner core
-         !--- (Omega.Gamma, with Gamma the torque exerted on the fluid).
-         if ( l_prec_fluid_frame ) then
-            powerIC=-get_wall_power(z10ICB,drz10ICB,z11ICB,drz11ICB,r_icb, &
-                     &              beta(n_r_max),visc(n_r_max),           &
-                     &              c_z10_omega_ic,c_z11_omega_ic) -       &
-                     &              omega_IC*lorentz_torque_ic
-            powerMA= get_wall_power(z10CMB,drz10CMB,z11CMB,drz11CMB,r_cmb, &
-                     &              beta(1),visc(1),c_z10_omega_ma,        &
-                     &              c_z11_omega_ma) -                      &
-                     &              omega_MA*lorentz_torque_ma
          end if
 
          !--- Because the two systems are coupled only the total
@@ -441,41 +406,6 @@ contains
       end if
 
   end subroutine get_power
-!----------------------------------------------------------------------------
-   real(cp) function get_wall_power(z10,dz10,z11,dz11,r_b,dLrho,nu, &
-                    &               c_z10,c_z11) result(wall_power)
-      !
-      ! Product Omega.Gamma of the rotation vector of a rigid boundary with
-      ! the viscous torque computed by get_viscous_torque, including the
-      ! equatorial components carried by z(l=1,m=1).
-      ! The rotation rates are omega_z=c_z10*z10 and
-      ! omega_x-i*omega_y=c_z11*z11. Since c_z11/c_z10=sqrt(2), the
-      ! equatorial torques follow from the axial formula applied to
-      ! sqrt(2)*z11.
-      !
-
-      !-- Input variables
-      real(cp),    intent(in) :: z10, dz10   ! z(l=1,m=0) and its radial derivative
-      complex(cp), intent(in) :: z11, dz11   ! z(l=1,m=1) and its radial derivative
-      real(cp),    intent(in) :: r_b         ! radius of the boundary
-      real(cp),    intent(in) :: dLrho       ! dln(rho)/dr at the boundary
-      real(cp),    intent(in) :: nu          ! viscosity at the boundary
-      real(cp),    intent(in) :: c_z10, c_z11
-
-      !-- Local variables
-      real(cp) :: torque_z, torque_x, torque_iy
-      complex(cp) :: omega_c
-
-      call get_viscous_torque(torque_z,z10,dz10,r_b,dLrho,nu)
-      call get_viscous_torque(torque_x,sqrt(two)*real(z11), &
-           &                  sqrt(two)*real(dz11),r_b,dLrho,nu)
-      call get_viscous_torque(torque_iy,sqrt(two)*aimag(z11), &
-           &                  sqrt(two)*aimag(dz11),r_b,dLrho,nu)
-
-      omega_c=c_z11*z11
-      wall_power=c_z10*z10*torque_z+real(omega_c)*torque_x+aimag(omega_c)*torque_iy
-
-   end function get_wall_power
 !----------------------------------------------------------------------------
    subroutine get_visc_heat(vr,vt,vp,cvr,dvrdr,dvrdt,dvrdp,dvtdr,&
               &             dvtdp,dvpdr,dvpdp,nR)

@@ -8,6 +8,7 @@ module init_fields
    use parallel_mod
    use chebyshev, only: type_cheb_odd
    use finite_differences, only: type_fd
+   use mpi_transp_mod, only: type_mpitransp
    use communications, only: lo2r_one, r2lo_one, transp_R2Phi, transp_Phi2R
    use truncation, only: n_r_max, n_r_maxMag, n_r_ic_max, m_min, l_max, &
        &                 n_phi_max, n_theta_max, n_r_tot, m_max,        &
@@ -19,7 +20,7 @@ module init_fields
    use logic, only: l_rot_ic, l_rot_ma, l_SRIC, l_SRMA, l_cond_ic,  &
        &            l_temperature_diff, l_chemical_conv, l_onset,   &
        &            l_anelastic_liquid, l_non_adia, l_finite_diff,  &
-       &            l_prec_fluid_frame
+       &            l_prec_ic_tilt
    use radial_functions, only: r_icb, r, r_cmb, r_ic, or1, jVarCon,    &
        &                       lambda, or2, dLlambda, or3, cheb_ic,    &
        &                       dcheb_ic, d2cheb_ic, cheb_norm_ic, or1, &
@@ -29,7 +30,8 @@ module init_fields
        &                       rho0, dLalpha0, alpha0, otemp1, ogrun,  &
        &                       rscheme_oc, or1, O_r_ic
    use radial_data, only: n_r_icb, n_r_cmb, nRstart, nRstop
-   use constants, only: pi, y10_norm, y11_norm, c_z10_omega_ic, c_z10_omega_ma, osq4pi, &
+   use constants, only: pi, y10_norm, c_z10_omega_ic, c_z10_omega_ma, osq4pi, &
+       &                c_z11_omega_ic,                                       &
        &                zero, one, two, three, four, third, half, sq4pi
    use useful, only: abortRun, lagrange_interp
    use sht, only: scal_to_SH, scal_to_spat
@@ -40,8 +42,7 @@ module init_fields
        &                          impXi, n_impXi_max, n_impXi, phiXi,     &
        &                          thetaXi, peakXi, widthXi, osc, epscxi,  &
        &                          kbotxi, ktopxi, BuoFac, ktopp, oek,     &
-       &                          prec_angle,                             &
-       &                          epsPhase
+       &                          epsPhase, prec_angle, prec_angle_ic
    use special, only: ampForce
    use algebra, only: prepare_mat, solve_mat
    use cosine_transform_odd
@@ -90,7 +91,7 @@ module init_fields
    real(cp), public :: omega_ma2,omegaOsz_ma2,tShift_ma2,tOmega_ma2
    real(cp), public :: omega_ic1,omegaOsz_ic1,tShift_ic1,tOmega_ic1
    real(cp), public :: omega_ic2,omegaOsz_ic2,tShift_ic2,tOmega_ic2
-   real(cp), public :: omega_prec ! z-rotation offset due to precession in fluid frame
+   real(cp), public :: omega_prec_ic ! z-rotation of a tilted inner core (precession)
 
    !----- About start-file:
    logical, public :: l_start_file     ! taking fields from startfile ?
@@ -106,7 +107,7 @@ module init_fields
    real(cp), public :: tipdipole       ! adding to symetric field
 
    public :: initialize_init_fields, initV, initS, initB, initPhi, initF, ps_cond, &
-   &         pt_cond, initXi, xi_cond, finalize_init_fields
+   &         pt_cond, initXi, xi_cond, finalize_init_fields, get_omega_eq_ic
 
 contains
 
@@ -335,7 +336,7 @@ contains
 
             if ( l_SRIC .or. l_rot_ic .and. omega_ic1 /= 0.0_cp ) then
                omega_ic=omega_ic1*cos(omegaOsz_ic1*tShift_ic1) + &
-               &        omega_ic2*cos(omegaOsz_ic2*tShift_ic2) + omega_prec
+               &        omega_ic2*cos(omegaOsz_ic2*tShift_ic2) + omega_prec_ic
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed inner core rotation rate:'
                write(output_unit,*) '! omega_ic=',omega_ic
@@ -347,7 +348,7 @@ contains
             end if
             if ( l_SRMA .or. l_rot_ma .and. omega_ma1 /= 0.0_cp ) then
                omega_ma=omega_ma1*cos(omegaOsz_ma1*tShift_ma1) + &
-               &        omega_ma2*cos(omegaOsz_ma2*tShift_ma2) + omega_prec
+               &        omega_ma2*cos(omegaOsz_ma2*tShift_ma2)
 
                write(output_unit,*)
                write(output_unit,*) '! I use prescribed mantle rotation rate:'
@@ -358,23 +359,13 @@ contains
             else
                omega_ma=0.0_cp
             end if
-
-            !-- Precession in the fluid frame: start with the fluid co-rotating
-            !-- with mantle and inner core (equivalent to a fluid at rest in
-            !-- the mantle frame)
-            if ( l_prec_fluid_frame ) then
-               do nR=1,n_r_max
-                  z(l1m0,nR)=cmplx(omega_prec*r(nR)*r(nR)*rho0(nR)/y10_norm,0.0_cp,kind=cp)
-               end do
-            end if
          end if
 
+         !-- Precession with a tilted inner core: equatorial rotation of the
+         !-- inner core about the tilted axis, the fluid is at rest
          l1m1 = lo_map%lm2(1,1)
-         if ( l_prec_fluid_frame .and. (l1m1>=llm) .and. (l1m1<=ulm) ) then
-            do nR=1,n_r_max
-               z(l1m1,nR)=cmplx(oek*sin(prec_angle)*r(nR)*r(nR)*rho0(nR)/ &
-               &                (two*y11_norm),0.0_cp,kind=cp)
-            end do
+         if ( l_prec_ic_tilt .and. (l1m1>=llm) .and. (l1m1<=ulm) ) then
+            z(l1m1,n_r_icb)=get_omega_eq_ic(0.0_cp)/c_z11_omega_ic
          end if
 
 #ifdef WITH_MPI
@@ -384,8 +375,8 @@ contains
          end if
 #endif
       else
-         if ( nRotIc == 2 ) omega_ic=omega_ic1 + omega_prec
-         if ( nRotMa == 2 ) omega_ma=omega_ma1 + omega_prec
+         if ( nRotIc == 2 ) omega_ic=omega_ic1
+         if ( nRotMa == 2 ) omega_ma=omega_ma1
       end if
 
    end subroutine initV
@@ -2515,5 +2506,31 @@ contains
       deallocate ( ps0Mat )
 
    end subroutine ps_cond
+!--------------------------------------------------------------------------------
+   complex(cp) function get_omega_eq_ic(time) result(omega_eq)
+      !
+      ! Equatorial rotation rate omega_x-i*omega_y of the inner core in the
+      ! mantle frame when precession is used with prec_angle_ic /= prec_angle.
+      ! Mantle and inner core spin at the same rate oek about their own axes,
+      ! z and k_ic, and precess together about the precession axis. k_ic lies
+      ! in the plane of z and of the precession axis, tilted from z by
+      ! prec_angle-prec_angle_ic towards the precession axis. In the mantle
+      ! frame, the inner core thus rotates at oek*(k_ic-z), and the equatorial
+      ! part of k_ic follows that of the precession axis, (cos(oek*t),
+      ! -sin(oek*t)) (see update_prec_force and get_nl). The z-component of
+      ! this rotation is omega_prec_ic.
+      !
+
+      !-- Input variable
+      real(cp), intent(in) :: time
+
+      if ( l_prec_ic_tilt ) then
+         omega_eq=oek*sin(prec_angle-prec_angle_ic)* &
+         &        cmplx(cos(oek*time),sin(oek*time),kind=cp)
+      else
+         omega_eq=zero
+      end if
+
+   end function get_omega_eq_ic
 !--------------------------------------------------------------------------------
 end module init_fields

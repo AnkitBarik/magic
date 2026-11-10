@@ -89,8 +89,8 @@ module logic
    logical :: l_AB1  ! 1st order Adams Bashforth
    logical :: l_cour_alf_damp ! Modified Alfven Courant condition based on Christensen et al., GJI, 1999 (.true. by default)
    logical :: l_earth_likeness ! Compute the Earth-likeness of the CMB field following Christensen et al., EPSL, 2010
-   logical :: l_precession ! Use precession, computed in the mantle frame
-   logical :: l_prec_fluid_frame ! Use precession, computed in the fluid frame
+   logical :: l_precession ! Use precession
+   logical :: l_prec_ic_tilt ! Inner-core spin axis tilted from the mantle's (prec_angle_ic /= prec_angle)
    logical :: l_centrifuge ! Compute centrifugal acceleration
    logical :: l_adv_curl   ! Use \curl{u}\times u for the advection
    logical :: l_full_sphere ! Set to .true. if this is a full sphere calculation

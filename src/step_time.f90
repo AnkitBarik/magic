@@ -20,12 +20,13 @@ module step_time_mod
        &                  n_r_icb, n_r_cmb
    use radial_der, only: get_dr_Rloc, get_ddr_Rloc, exch_ghosts, bulk_to_ghost
    use radial_functions, only: rscheme_oc
+   use special, only: l_vr_cmb, l_vr_icb
    use logic, only: l_mag, l_mag_LF, l_dtB, l_RMS, l_hel, l_TO,        &
        &            l_TOmovie, l_r_field, l_cmb_field, l_HTmovie,      &
        &            l_DTrMagSpec, lVerbose, l_b_nl_icb, l_par,         &
        &            l_b_nl_cmb, l_FluxProfs, l_ViscBcCalc, l_perpPar,  &
        &            l_HT, l_dtBmovie, l_heat, l_conv, l_movie,         &
-       &            l_runTimeLimit, l_save_out, l_bridge_step,         &
+       &            l_runTimeLimit, l_save_out, l_bridge_step, l_precession,         &
        &            l_dt_cmb_field, l_chemical_conv, l_mag_kin, l_hemi,&
        &            l_power, l_double_curl, l_PressGraph, l_probe,     &
        &            l_AB1, l_finite_diff, l_cond_ic, l_single_matrix,  &
@@ -36,7 +37,7 @@ module step_time_mod
    use radialLoop, only: radialLoopG
    use LMLoop_mod, only: LMLoop, finish_explicit_assembly, assemble_stage, &
        &                 finish_explicit_assembly_Rdist, LMLoop_Rdist,     &
-       &                 assemble_stage_Rdist
+       &                 assemble_stage_Rdist, update_boundary_values
    use signals_mod, only: initialize_signals, check_signals
    use graphOut_mod, only: open_graph_file, close_graph_file
    use output_data, only: tag, n_graph_step, n_graphs, dt_graph, t_graph, &
@@ -63,10 +64,11 @@ module step_time_mod
    use updatePhi_mod, only: get_phase_rhs_imp, get_phase_rhs_imp_ghost, phi_ghost, &
        &                    fill_ghosts_Phi
    use updateZ_mod, only: get_tor_rhs_imp, get_tor_rhs_imp_ghost, z_ghost, &
-       &                  fill_ghosts_Z
+       &                  fill_ghosts_Z, update_prec_force
    use output_mod, only: output
    use time_schemes, only: type_tscheme
    use useful, only: l_correct_step, logWrite
+   use mpi_transp_mod, only: type_mpitransp
    use communications, only: lo2r_field, lo2r_flow, scatter_from_rank0_to_lo, &
        &                     lo2r_xi,  r2lo_flow, r2lo_s, r2lo_xi,r2lo_field, &
        &                     lo2r_s, lo2r_press, lo2r_one, r2lo_one
@@ -565,7 +567,8 @@ contains
                   call f_exp_counter%start_count()
                   if ( l_parallel_solve ) then
                      if ( l_mag_par_solve ) then
-                     call finish_explicit_assembly_Rdist(omega_ma,omega_ic,w_Rloc,      &
+                     call finish_explicit_assembly_Rdist(timeStage,omega_ma,omega_ic,    &
+                          &                              w_Rloc,                        &
                           &                              b_ic_LMloc,aj_ic_LMloc,        &
                           &                              dVSrLM_RLoc,dVXirLM_RLoc,      &
                           &                              dVxVhLM_Rloc,dVxBhLM_Rloc,     &
@@ -578,7 +581,8 @@ contains
                           &                              dbdt_ic, djdt_ic, domega_ma_dt,&
                           &                              domega_ic_dt, tscheme)
                      else
-                     call finish_explicit_assembly_Rdist(omega_ma,omega_ic,w_Rloc,      &
+                     call finish_explicit_assembly_Rdist(timeStage,omega_ma,omega_ic,    &
+                          &                              w_Rloc,                        &
                           &                              b_ic_LMloc,aj_ic_LMloc,        &
                           &                              dVSrLM_RLoc,dVXirLM_RLoc,      &
                           &                              dVxVhLM_Rloc,dVxBhLM_Rloc,     &
@@ -592,7 +596,8 @@ contains
                           &                              tscheme)
                      end if
                   else
-                     call finish_explicit_assembly_Rdist(omega_ma,omega_ic,w_Rloc,      &
+                     call finish_explicit_assembly_Rdist(timeStage,omega_ma,omega_ic,    &
+                          &                              w_Rloc,                        &
                           &                              b_ic_LMloc,aj_ic_LMloc,        &
                           &                              dVSrLM_RLoc,dVXirLM_RLoc,      &
                           &                              dVxVhLM_Rloc,dVxBhLM_Rloc,     &
@@ -644,7 +649,8 @@ contains
                call lmLoop_counter%start_count()
                if ( (.not. l_finish_exp_early) ) then
                   call f_exp_counter%start_count()
-                  call finish_explicit_assembly(omega_ma, omega_ic, w_LMloc,         &
+                  call finish_explicit_assembly(timeStage, omega_ma, omega_ic,        &
+                       &                        w_LMloc,                             &
                        &                        b_ic_LMloc, aj_ic_LMloc,             &
                        &                        dVSrLM_LMLoc(:,:,tscheme%istage),    &
                        &                        dVXirLM_LMLoc(:,:,tscheme%istage),   &
@@ -738,7 +744,12 @@ contains
 
             !-- If the scheme is a multi-step scheme that is not Crank-Nicolson
             !-- we have to use a different starting scheme
-            call start_from_another_scheme(timeLast, l_bridge_step, n_time_step, tscheme)
+            call start_from_another_scheme(l_bridge_step, n_time_step, tscheme)
+
+            !-- Boundary motion and Poincare force for this stage (they still
+            !-- hold their values at timeLast for start_from_another_scheme above)
+            call update_boundary_values(timeStage)
+            if ( l_precession ) call update_prec_force(timeStage)
 
             !---------------
             !-- LM Loop (update routines)
@@ -747,12 +758,12 @@ contains
                if ( lVerbose ) write(output_unit,*) '! starting lm-loop!'
                call lmLoop_counter%start_count()
                if ( l_parallel_solve ) then
-                  call LMLoop_Rdist(timeStage,time,tscheme,lMat,lRmsNext,lPressNext, &
+                  call LMLoop_Rdist(timeStage,tscheme,lMat,lRmsNext,lPressNext, &
                        &            lP00Next,dsdt,dwdt,dzdt,dpdt,dxidt,dphidt,dbdt,  &
                        &            djdt,dbdt_ic,djdt_ic,domega_ma_dt,domega_ic_dt,  &
                        &            b_nl_cmb,aj_nl_cmb,aj_nl_icb)
                else
-                  call LMLoop(timeStage,time,tscheme,lMat,lRmsNext,lPressNext,dsdt,  &
+                  call LMLoop(timeStage,tscheme,lMat,lRmsNext,lPressNext,dsdt,  &
                        &      dwdt,dzdt,dpdt,dxidt,dphidt,dbdt,djdt,dbdt_ic,djdt_ic, &
                        &      domega_ma_dt,domega_ic_dt,b_nl_cmb,aj_nl_cmb,aj_nl_icb)
                end if
@@ -774,13 +785,15 @@ contains
          !-- Assembly stage of IMEX-RK (if needed)
          !----------------------------
          if ( tscheme%l_assembly ) then
+            call update_boundary_values(time)
+            if ( l_precession ) call update_prec_force(time)
             if ( l_parallel_solve ) then
-               call assemble_stage_Rdist(time, omega_ic, omega_ic1, omega_ma, omega_ma1,&
+               call assemble_stage_Rdist(omega_ic, omega_ic1, omega_ma, omega_ma1,&
                     &                    dwdt, dzdt, dpdt, dsdt, dxidt, dphidt, dbdt,   &
                     &                    djdt, dbdt_ic, djdt_ic, domega_ic_dt,          &
                     &                    domega_ma_dt, lPressNext, lRmsNext, tscheme)
             else
-               call assemble_stage(time, omega_ic, omega_ic1, omega_ma, omega_ma1,     &
+               call assemble_stage(omega_ic, omega_ic1, omega_ma, omega_ma1,     &
                     &              dwdt, dzdt, dpdt, dsdt, dxidt, dphidt, dbdt, djdt,  &
                     &              dbdt_ic, djdt_ic, domega_ic_dt, domega_ma_dt,       &
                     &              lPressNext, lRmsNext, tscheme)
@@ -878,7 +891,7 @@ contains
 
    end subroutine step_time
 !------------------------------------------------------------------------------
-   subroutine start_from_another_scheme(time, l_bridge_step, n_time_step, tscheme)
+   subroutine start_from_another_scheme(l_bridge_step, n_time_step, tscheme)
       !
       ! This subroutine is used to initialize multisteps schemes whenever previous
       ! steps are not known. In that case a CN/AB2 scheme is used to bridge the
@@ -886,7 +899,6 @@ contains
       !
 
       !-- Input variables
-      real(cp),            intent(in) :: time
       logical,             intent(in) :: l_bridge_step
       integer,             intent(in) :: n_time_step
 
@@ -935,11 +947,11 @@ contains
             call bulk_to_ghost(z_Rloc, z_ghost, 1, nRstart, nRstop, lm_max, 1, lm_max)
             call exch_ghosts(z_ghost, lm_max, nRstart, nRstop, 1)
             call fill_ghosts_Z(z_ghost)
-            call get_tor_rhs_imp_ghost(time, z_ghost, dz_Rloc, dzdt, domega_ma_dt,  &
+            call get_tor_rhs_imp_ghost(z_ghost, dz_Rloc, dzdt, domega_ma_dt,  &
                  &                     domega_ic_dt, omega_ic, omega_ma, omega_ic1, &
                  &                     omega_ma1, tscheme, 1, .true., .false.)
          else
-            call get_tor_rhs_imp(time, z_LMloc, dz_LMloc, dzdt, domega_ma_dt,  &
+            call get_tor_rhs_imp(z_LMloc, dz_LMloc, dzdt, domega_ma_dt,  &
                  &               domega_ic_dt, omega_ic, omega_ma, omega_ic1,  &
                  &               omega_ma1, tscheme, 1, .true., .false.)
          end if

@@ -16,14 +16,15 @@ module preCalculations
    use init_fields, only: bots, tops, s_bot, s_top, n_s_bounds,    &
        &                  l_reset_t, topxi, botxi, xi_bot, xi_top, &
        &                  n_xi_bounds, omega_ma1, omegaOsz_ma1,    &
-       &                  omega_ic1, omegaOsz_ic1, omega_prec
+       &                  omega_ic1, omegaOsz_ic1, omega_prec_ic
    use parallel_mod, only: rank, n_procs, rank_with_r_LCR
    use logic, only: l_mag, l_cond_ic, l_non_rot, l_mag_LF, l_newmap,     &
        &            l_anel, l_heat, l_anelastic_liquid,                  &
        &            l_cmb_field, l_save_out, l_TO, l_TOmovie, l_r_field, &
        &            l_movie, l_LCR, l_dt_cmb_field, l_non_adia,          &
        &            l_temperature_diff, l_chemical_conv, l_probe,        &
-       &            l_precession, l_finite_diff, l_full_sphere, l_prec_fluid_frame
+       &            l_precession, l_finite_diff, l_full_sphere,          &
+       &            l_prec_ic_tilt
    use radial_data, only: radial_balance
    use radial_functions, only: rscheme_oc, temp0, r_CMB, ogrun,            &
        &                       r_surface, visc, or2, r, r_ICB, dLtemp0,    &
@@ -39,7 +40,8 @@ module preCalculations
        &                          ktops, kbots, interior_model, r_LCR,     &
        &                          n_r_LCR, mode, tmagcon, oek, Bn, imagcon,&
        &                          ktopxi, kbotxi, epscxi, epscxi0, sc, osc,&
-       &                          ChemFac, raxi, Po, prec_angle
+       &                          ChemFac, raxi, Po, prec_angle,           &
+       &                          prec_angle_ic
    use horizontal_data, only: horizontal
    use integration, only: rInt_R
    use useful, only: logWrite, abortRun
@@ -47,7 +49,7 @@ module preCalculations
        &              l_imp, ellipticity_cmb, ellip_fac_cmb,               &
        &              ellipticity_icb, ellip_fac_icb,                      &
        &              tide_fac20, tide_fac22p, tide_fac22n,                &
-       &              amp_tide, l_vr_bc
+       &              amp_tide
    use time_schemes, only: type_tscheme
 
    implicit none
@@ -164,6 +166,17 @@ contains
       oek = CorFac
 
       if ( l_precession ) CorFac = CorFac*(one+po*cos(prec_angle))
+
+      !-- Precession with a tilted inner core: in the mantle frame, the inner
+      !-- core rotates at oek*(k_ic-z) with k_ic its spin axis, tilted by
+      !-- prec_angle-prec_angle_ic from z towards the precession axis.
+      !-- omega_prec_ic is the z-component of this rotation (see get_omega_eq_ic
+      !-- for the equatorial one).
+      if ( l_prec_ic_tilt ) then
+         omega_prec_ic=oek*(cos(prec_angle-prec_angle_ic)-one)
+      else
+         omega_prec_ic=0.0_cp
+      end if
 
       ! Note: BuoFac is the factor used in front of the buoyancy force.
       !       In the scaling used here its
@@ -309,16 +322,6 @@ contains
          delxr2(n_r)=delmin*delmin
       end do
 
-      !-- Precession in the fluid frame: the frame rotates at oek about the
-      !-- precession axis z, while mantle and inner core rotate at
-      !-- oek*(k_m+po*z), with k_m tilted by prec_angle from z.
-      !-- omega_prec is the z-component of their rotation relative to the frame.
-      if ( l_prec_fluid_frame ) then
-         omega_prec = oek * (cos(prec_angle) - one + po)
-      else
-         omega_prec = 0.0_cp
-      end if
-
       !-- Constants used for rotating core or mantle:
       y10_norm=half*sqrt(three/pi)  ! y10=y10_norm * cos(theta)
       y11_norm=half*sqrt(1.5_cp/pi) ! y11=y11_norm * sin(theta)
@@ -332,7 +335,8 @@ contains
       c_z10_omega_ma=y10_norm*or2(1)/rho0(1)
 
       !----- Proportionality factors of (l=1,m=1) toroidal velocity potential
-      !      and equatorial rotation rate of inner core and mantle:
+      !      and equatorial rotation rate omega_x-i*omega_y of inner core and
+      !      mantle:
       c_z11_omega_ic=two*y11_norm*or2(n_r_max)/rho0(n_r_max)
       c_z11_omega_ma=two*y11_norm*or2(1)/rho0(1)
 
@@ -783,31 +787,29 @@ contains
       n_s_max = n_r_max+int(r_icb*n_r_max)
       n_s_max = int(sDens*n_s_max)
 
-      if (l_vr_bc) then
-         if ( ellipticity_cmb /= 0.0_cp ) then
-            ellip_fac_cmb=-two*r_cmb**3*ellipticity_cmb*omega_ma1*omegaOsz_ma1/6.0_cp
-         else
-            ellip_fac_cmb=0.0_cp
-         end if
+      if ( ellipticity_cmb /= 0.0_cp ) then
+         ellip_fac_cmb=-two*r_cmb**3*ellipticity_cmb*omega_ma1*omegaOsz_ma1/6.0_cp
+      else
+         ellip_fac_cmb=0.0_cp
+      end if
 
-         if ( ellipticity_icb /= 0.0_cp ) then
-            ellip_fac_icb=-two*r_icb**3*ellipticity_icb*omega_ic1*omegaOsz_ic1/6.0_cp
-         else
-            ellip_fac_icb=0.0_cp
-         end if
+      if ( ellipticity_icb /= 0.0_cp ) then
+         ellip_fac_icb=-two*r_icb**3*ellipticity_icb*omega_ic1*omegaOsz_ic1/6.0_cp
+      else
+         ellip_fac_icb=0.0_cp
+      end if
 
-         if ( amp_tide /= 0.0_cp ) then
-            ! 6 factor = l*(l+1) for l=2
-            y20_norm = 0.5_cp  * sqrt(5.0_cp/pi) * 6.0_cp / r_cmb**2
-            y22_norm = 0.25_cp * sqrt(7.5_cp/pi) * 6.0_cp / r_cmb**2
-            tide_fac22n = 0.5_cp * amp_tide / y22_norm ! Needs a half factor, (2,2,3) mode
-            tide_fac22p = tide_fac22n / 7.0_cp  ! (2,2,1) mode of Ogilvie 2014
-            tide_fac20  = 4.0_cp/7.0_cp * amp_tide / y20_norm ! (2,0,1) mode of Ogilvie 2014
-         else
-            tide_fac20  = 0.0_cp
-            tide_fac22p = 0.0_cp
-            tide_fac22n = 0.0_cp
-         end if
+      if ( amp_tide /= 0.0_cp ) then
+         ! 6 factor = l*(l+1) for l=2
+         y20_norm = 0.5_cp  * sqrt(5.0_cp/pi) * 6.0_cp / r_cmb**2
+         y22_norm = 0.25_cp * sqrt(7.5_cp/pi) * 6.0_cp / r_cmb**2
+         tide_fac22n = 0.5_cp * amp_tide / y22_norm ! Needs a half factor, (2,2,3) mode
+         tide_fac22p = tide_fac22n / 7.0_cp  ! (2,2,1) mode of Ogilvie 2014
+         tide_fac20  = 4.0_cp/7.0_cp * amp_tide / y20_norm ! (2,0,1) mode of Ogilvie 2014
+      else
+         tide_fac20  = 0.0_cp
+         tide_fac22p = 0.0_cp
+         tide_fac22n = 0.0_cp
       end if
    end subroutine preCalc
 !-------------------------------------------------------------------------------

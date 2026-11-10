@@ -19,10 +19,9 @@ module rIter_mod
        &            l_cond_ma, l_dtB, l_store_frame, l_movie_oc,     &
        &            l_TO, l_chemical_conv, l_probe, l_full_sphere,   &
        &            l_precession, l_centrifuge, l_adv_curl,          &
-       &            l_prec_fluid_frame,                              &
        &            l_double_curl, l_parallel_solve, l_single_matrix,&
        &            l_temperature_diff, l_RMS, l_phase_field,        &
-       &            l_onset, l_DTrMagSpec
+       &            l_onset, l_DTrMagSpec, l_prec_ic_tilt
    use radial_data, only: n_r_cmb, n_r_icb, nRstart, nRstop, nRstartMag, &
        &                  nRstopMag
    use radial_functions, only: or2, orho1, l_R
@@ -481,6 +480,16 @@ contains
       logical, intent(in) :: lFluxProfCalc, lPerpParCalc, lHelCalc, l_frame
       logical, intent(in) :: lDeriv, lGeosCalc, lHemiCalc
 
+      !-- Local variables
+      logical :: l_moving_bc ! Boundary with prescribed radial or tilted motion
+
+      !-- A tilted inner core (precession) also rotates about an equatorial
+      !-- axis: this rigid rotation is carried exactly by z(l=1,m=0) and
+      !-- z(l=1,m=1) at the boundary, hence the spectral path is used.
+      l_moving_bc = nBc > 0 .and. ( ( nR == n_r_cmb .and. l_vr_cmb ) .or.     &
+      &                             ( nR == n_r_icb .and. (l_vr_icb .or.      &
+      &                                                    l_prec_ic_tilt) ) )
+
       if ( l_conv .or. l_mag_kin ) then
          if ( l_heat ) then
             call scal_to_spat(s_Rloc(:,nR), this%gsa%sc, l_R(nR))
@@ -512,7 +521,7 @@ contains
          if ( l_HT .or. lViscBcCalc ) then
             call scal_to_spat(ds_Rloc(:,nR), this%gsa%drsc, l_R(nR))
          endif
-         if ( nBc == 0 ) then ! Bulk points
+         if ( nBc == 0 .or. l_moving_bc ) then ! Bulk points or moving rigid boundary
             !-- pol, sph, tor > ur,ut,up
             call torpol_to_spat(w_Rloc(:,nR), dw_Rloc(:,nR),  z_Rloc(:,nR), &
                  &              this%gsa%vrc, this%gsa%vtc, this%gsa%vpc, l_R(nR))
@@ -568,30 +577,8 @@ contains
                call torpol_to_dphspat(dw_Rloc(:,nR),  z_Rloc(:,nR), &
                     &                 this%gsa%dvtdpc, this%gsa%dvpdpc, l_R(nR))
             end if
-         else if ( nBc == 2 .and. l_prec_fluid_frame ) then
-            !-- Precession in the fluid frame: the boundaries rotate rigidly
-            !-- about a tilted axis. This rigid rotation is carried exactly by
-            !-- z(l=1,m=0) and z(l=1,m=1) (w=dw=0), so the velocities and their
-            !-- derivatives are obtained from the spectral fields.
-            call torpol_to_spat(w_Rloc(:,nR), dw_Rloc(:,nR),  z_Rloc(:,nR), &
-                 &              this%gsa%vrc, this%gsa%vtc, this%gsa%vpc, l_R(nR))
-            this%gsa%vrc(:,:)=0.0_cp
-            if ( lDeriv ) then
-               this%gsa%dvrdtc(:,:)=0.0_cp
-               this%gsa%dvrdpc(:,:)=0.0_cp
-               call torpol_to_spat(dw_Rloc(:,nR), ddw_Rloc(:,nR), dz_Rloc(:,nR), &
-                    &              this%gsa%dvrdrc, this%gsa%dvtdrc,             &
-                    &              this%gsa%dvpdrc, l_R(nR))
-               call pol_to_curlr_spat(z_Rloc(:,nR), this%gsa%cvrc, l_R(nR))
-               call torpol_to_dphspat(dw_Rloc(:,nR),  z_Rloc(:,nR), &
-                    &                 this%gsa%dvtdpc, this%gsa%dvpdpc, l_R(nR))
-            end if
          else if ( nBc == 2 ) then
             if ( nR == n_r_cmb ) then
-               if ( l_vr_cmb ) then
-                  call torpol_to_spat(w_Rloc(:,nR), dw_Rloc(:,nR),  z_Rloc(:,nR), &
-                       &              this%gsa%vrc, this%gsa%vtc, this%gsa%vpc, l_R(nR))
-               end if
                call v_rigid_boundary(nR, omega_ma, lDeriv, this%gsa%vrc,      &
                     &              this%gsa%vtc, this%gsa%vpc, this%gsa%cvrc, &
                     &              this%gsa%dvrdtc, this%gsa%dvrdpc,          &
@@ -599,10 +586,6 @@ contains
             end if
 
             if ( nR == n_r_icb ) then
-               if ( l_vr_icb ) then
-                  call torpol_to_spat(w_Rloc(:,nR), dw_Rloc(:,nR),  z_Rloc(:,nR), &
-                       &              this%gsa%vrc, this%gsa%vtc, this%gsa%vpc, l_R(nR))
-               end if
                call v_rigid_boundary(nR, omega_ic, lDeriv, this%gsa%vrc,      &
                     &              this%gsa%vtc, this%gsa%vpc, this%gsa%cvrc, &
                     &              this%gsa%dvrdtc, this%gsa%dvrdpc,          &

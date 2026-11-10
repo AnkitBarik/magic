@@ -20,6 +20,7 @@ module grid_space_arrays_mod
    use precision_mod
    use mem_alloc, only: bytes_allocated
    use truncation, only: n_phi_max, nlat_padded
+   use radial_data, only: n_r_icb
    use radial_functions, only: or2, orho1, beta, otemp1, visc, r, or3, &
        &                       lambda, or4, or1
    use physical_parameters, only: LFfac, n_r_LCR, prec_angle, ViscHeatFac,    &
@@ -31,7 +32,7 @@ module grid_space_arrays_mod
    use constants, only: two, third, one
    use logic, only: l_conv_nl, l_heat_nl, l_mag_nl, l_anel, l_mag_LF, l_adv_curl, &
        &            l_chemical_conv, l_precession, l_centrifuge, l_phase_field, &
-       &            l_prec_fluid_frame
+       &            l_prec_ic_tilt
 
    implicit none
 
@@ -394,9 +395,9 @@ contains
                this%VxBp(:,nPhi)=-or4(nR)*orho1(nR)*this%vtc(:,nPhi)*this%brc(:,nPhi)
             else if ( nBc == 2 ) then  ! rigid boundary :
                !-- Only vp /= 0 at boundary allowed (rotation of boundaries about z-axis):
-               !-- For precession in the fluid frame, vt /= 0 too.
+               !-- A tilted inner core (precession) also has vt /= 0 at the ICB.
                this%VxBt(:,nPhi)=or4(nR)*orho1(nR)*this%vpc(:,nPhi)*this%brc(:,nPhi)
-               if ( l_prec_fluid_frame ) then
+               if ( l_prec_ic_tilt .and. nR == n_r_icb ) then
                   this%VxBp(:,nPhi)=-or4(nR)*orho1(nR)*this%vtc(:,nPhi)*this%brc(:,nPhi)
                else
                   this%VxBp(:,nPhi)= 0.0_cp

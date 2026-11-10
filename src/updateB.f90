@@ -12,7 +12,7 @@ module updateB_mod
    use mem_alloc, only: bytes_allocated
    use truncation, only: n_r_max, n_r_tot, n_r_ic_max,             &
        &                 n_cheb_ic_max, n_r_ic_maxMag, n_r_maxMag, &
-       &                 n_r_totMag, lm_max, l_maxMag, lm_maxMag
+       &                 n_r_totMag, lm_max, l_maxMag, lm_maxMag, minc
    use radial_functions, only: chebt_ic,or2,r_cmb,chebt_ic_even, d2cheb_ic, l_R, &
        &                       cheb_norm_ic,dr_fac_ic,lambda,dLlambda,o_r_ic,r,  &
        &                       or1, cheb_ic, dcheb_ic, rscheme_oc, dr_top_ic
@@ -25,9 +25,9 @@ module updateB_mod
    use horizontal_data, only: hdif_B
    use logic, only: l_cond_ic, l_LCR, l_rot_ic, l_mag_nl, l_b_nl_icb, &
        &            l_b_nl_cmb, l_cond_ma, l_RMS, l_finite_diff,      &
-       &            l_full_sphere, l_mag_par_solve
+       &            l_full_sphere, l_mag_par_solve, l_prec_ic_tilt
    use RMS, only: dtBPolLMr, dtBPol2hInt, dtBTor2hInt
-   use constants, only: pi, zero, one, two, three, half
+   use constants, only: pi, zero, one, two, three, half, ci
    use special, only: n_imp, l_imp, amp_imp, expo_imp, bmax_imp, rrMP, l_curr, &
        &              amp_curr, fac_loop
    use fields, only: work_LMloc
@@ -50,6 +50,10 @@ module updateB_mod
    !-- Local work arrays:
    complex(cp), allocatable :: workA(:,:), workB(:,:)
    complex(cp), allocatable :: work_ic_LMloc(:,:)
+   !-- Inner-core potentials with one halo point on each side of the local LM
+   !-- range, needed by the m+-1 coupling of a tilted inner-core rotation
+   complex(cp), allocatable :: b_ic_ext(:,:), aj_ic_ext(:,:)
+   logical :: l_ic_halo ! Exchange the halo points with the neighbouring ranks
    real(cp), allocatable :: rhs1(:,:,:),rhs2(:,:,:)
    class(type_realmat), pointer :: bMat(:), jMat(:)
 #ifdef WITH_PRECOND_BJ
@@ -78,6 +82,9 @@ contains
       !-- Local variables
       integer, pointer :: nLMBs2(:)
       integer :: maxThreads, ll, n_bandsJ, n_bandsB
+
+      !-- Rotation of the inner core about a tilted axis couples m to m+-1
+      if ( l_cond_ic .and. l_prec_ic_tilt ) call initialize_ic_tilted_rotation()
 
       if ( .not. l_mag_par_solve ) then
          nLMBs2(1:n_procs) => lo_sub_map%nLMBs2
@@ -201,6 +208,7 @@ contains
       integer :: ll
 
       if ( l_RMS ) deallocate( workA, workB )
+      if ( allocated(b_ic_ext) ) deallocate( b_ic_ext, aj_ic_ext )
       if ( .not. l_mag_par_solve ) then
          nLMBs2(1:n_procs) => lo_sub_map%nLMBs2
 
@@ -952,14 +960,28 @@ contains
 
    end subroutine updateB_FD
 !-----------------------------------------------------------------------------
-   subroutine finish_exp_mag_ic(b_ic, aj_ic, omega_ic, db_exp_last, dj_exp_last)
+   subroutine finish_exp_mag_ic(b_ic, aj_ic, omega_ic, omega_eq, db_exp_last, &
+              &                 dj_exp_last)
       !
-      ! This subroutine computes the nonlinear term at the inner core boundary
-      ! when there is a conducting inner core and stress-free boundary conditions.
+      ! This subroutine computes the advection of the magnetic field by the
+      ! solid-body rotation of a conducting inner core. For a rigid rotation
+      ! omega, the poloidal and toroidal potentials are simply rotated:
+      ! d/dt f = -i omega.L f. omega_z couples each (l,m) to itself while the
+      ! equatorial part omega_x - i omega_y couples m to m+-1 at the same l.
+      ! The harmonics have no Condon-Shortley phase, so that
+      !
+      ! d/dt f_lm = -i m omega_z f_lm + i/2 [ (omega_x-i omega_y) A_lm f_{l,m-1}
+      !                                    + (omega_x+i omega_y) B_lm f_{l,m+1} ]
+      !
+      ! with A_lm=sqrt((l+m)(l-m+1)), B_lm=sqrt((l-m)(l+m+1)) and
+      ! f_{l,-1}=-conjg(f_{l,1}). The neighbours m+-1 are read from copies of
+      ! b_ic and aj_ic extended by one halo point on each side of the local LM
+      ! range, filled by the neighbouring ranks when a degree l is split.
       !
 
       !-- Input variables
-      real(cp),    intent(in) :: omega_ic
+      real(cp),    intent(in) :: omega_ic ! Rotation rate of the IC about z
+      complex(cp), intent(in) :: omega_eq ! Equatorial rotation omega_x - i omega_y
       complex(cp), intent(in) :: aj_ic(llmMag:ulmMag,n_r_ic_max)
       complex(cp), intent(in) :: b_ic(llmMag:ulmMag,n_r_ic_max)
 
@@ -968,29 +990,57 @@ contains
       complex(cp), intent(inout) :: dj_exp_last(llmMag:ulmMag,n_r_ic_max)
 
       !-- Local variables
-      complex(cp) :: fac
-      integer :: n_r, lm, l1, m1
-      integer, pointer :: lm2l(:),lm2m(:)
+      complex(cp) :: fac, rot_b, rot_j, om_m, om_p
+      real(cp) :: a_lm, b_lm
+      integer :: n_r, lm, l1, m1, lmm, lmp
+      integer, pointer :: lm2l(:),lm2m(:),lm2(:,:)
 
       lm2l(1:lm_max) => lo_map%lm2l
       lm2m(1:lm_max) => lo_map%lm2m
+      lm2(0:,0:) => lo_map%lm2
 
-      if ( omega_ic /= 0.0_cp .and. l_rot_ic .and. l_mag_nl ) then
-         !$omp parallel do default(shared) private(lm,n_r,fac,l1,m1) collapse(2)
+      if ( (omega_ic /= 0.0_cp .or. omega_eq /= zero) .and. l_rot_ic .and. &
+      &    l_mag_nl ) then
+         om_m=half*ci*omega_eq
+         om_p=half*ci*conjg(omega_eq)
+         if ( omega_eq /= zero ) call fill_ic_halo(b_ic, aj_ic)
+         !$omp parallel do default(shared) collapse(2) &
+         !$omp private(lm,n_r,fac,l1,m1,lmm,lmp,a_lm,b_lm,rot_b,rot_j)
          do n_r=2,n_r_ic_max
             do lm=llmMag,ulmMag
                l1=lm2l(lm)
                m1=lm2m(lm)
+               fac=or2(n_r_max)*real(l1*(l1+1),cp)
 
-               fac = -omega_ic*or2(n_r_max)*cmplx(0.0_cp,real(m1,cp),cp)* &
-               &      real(l1*(l1+1),cp)
-               db_exp_last(lm,n_r)=fac*b_ic(lm,n_r)
-               dj_exp_last(lm,n_r)=fac*aj_ic(lm,n_r)
+               rot_b=-ci*real(m1,cp)*omega_ic*b_ic(lm,n_r)
+               rot_j=-ci*real(m1,cp)*omega_ic*aj_ic(lm,n_r)
+
+               if ( omega_eq /= zero .and. l1 > 0 ) then
+                  a_lm=sqrt(real((l1+m1)*(l1-m1+1),cp))
+                  b_lm=sqrt(real((l1-m1)*(l1+m1+1),cp))
+                  if ( m1 > 0 ) then
+                     lmm=lm2(l1,m1-1)
+                     rot_b=rot_b+om_m*a_lm*b_ic_ext(lmm,n_r)
+                     rot_j=rot_j+om_m*a_lm*aj_ic_ext(lmm,n_r)
+                  else ! f_{l,-1}=-conjg(f_{l,1})
+                     lmm=lm2(l1,1)
+                     rot_b=rot_b-om_m*a_lm*conjg(b_ic_ext(lmm,n_r))
+                     rot_j=rot_j-om_m*a_lm*conjg(aj_ic_ext(lmm,n_r))
+                  end if
+                  if ( m1 < min(l1,lo_map%m_max) ) then
+                     lmp=lm2(l1,m1+1)
+                     rot_b=rot_b+om_p*b_lm*b_ic_ext(lmp,n_r)
+                     rot_j=rot_j+om_p*b_lm*aj_ic_ext(lmp,n_r)
+                  end if
+               end if
+
+               db_exp_last(lm,n_r)=fac*rot_b
+               dj_exp_last(lm,n_r)=fac*rot_j
             end do
          end do
          !$omp end parallel do
       else
-         !$omp parallel do default(shared) private(lm,n_r,fac) collapse(2)
+         !$omp parallel do default(shared) private(lm,n_r) collapse(2)
          do n_r=2,n_r_ic_max
             do lm=llmMag,ulmMag
                db_exp_last(lm,n_r)=zero
@@ -1001,6 +1051,137 @@ contains
       end if
 
    end subroutine finish_exp_mag_ic
+!-----------------------------------------------------------------------------
+   subroutine initialize_ic_tilted_rotation()
+      !
+      ! The rotation of a conducting inner core about a tilted axis couples
+      ! the azimuthal wavenumbers m and m+-1 of each degree l. This requires
+      ! minc=1. With the snake LM distribution each rank holds all the orders
+      ! m of its degrees. With the l-ordered distribution (more than l_max/2
+      ! ranks), lm runs over m within each l and a degree can be split between
+      ! two consecutive ranks: the missing neighbours are then the points just
+      ! below and just above the local LM range, owned by rank-1 and rank+1.
+      !
+
+      !-- Local variables
+      integer :: lm, l1, m1, lmn
+      logical :: l_ok
+#ifdef WITH_MPI
+      integer :: lm_range(2,0:n_procs-1)
+#endif
+
+      if ( minc /= 1 ) then
+         call abortRun('! A conducting tilted inner core (prec_angle_ic) requires minc=1')
+      end if
+
+      l_ic_halo=.false.
+      l_ok=.true.
+      do lm=llmMag,ulmMag
+         l1=lo_map%lm2l(lm)
+         m1=lo_map%lm2m(lm)
+         if ( l1 == 0 ) cycle
+         if ( m1 > 0 ) then
+            lmn=lo_map%lm2(l1,m1-1)
+         else
+            lmn=lo_map%lm2(l1,1)
+         end if
+         call check_neighbour(lmn)
+         if ( m1 < min(l1,lo_map%m_max) ) call check_neighbour(lo_map%lm2(l1,m1+1))
+      end do
+
+#ifdef WITH_MPI
+      !-- The halo points must be owned by the neighbouring ranks
+      call MPI_Allgather([llmMag,ulmMag], 2, MPI_INTEGER, lm_range, 2, &
+           &             MPI_INTEGER, MPI_COMM_WORLD, ierr)
+      if ( l_ic_halo ) then
+         if ( rank > 0 ) then
+            if ( lm_range(2,rank-1) /= llmMag-1 ) l_ok=.false.
+         end if
+         if ( rank < n_procs-1 ) then
+            if ( lm_range(1,rank+1) /= ulmMag+1 ) l_ok=.false.
+         end if
+      end if
+      call MPI_Allreduce(MPI_IN_PLACE,l_ok,1,MPI_LOGICAL,MPI_LAND, &
+           &             MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(MPI_IN_PLACE,l_ic_halo,1,MPI_LOGICAL,MPI_LOR, &
+           &             MPI_COMM_WORLD,ierr)
+#endif
+      if ( .not. l_ok ) then
+         call abortRun('! Unsupported LM distribution for a tilted inner-core rotation')
+      end if
+
+      allocate( b_ic_ext(llmMag-1:ulmMag+1,n_r_ic_max) )
+      allocate( aj_ic_ext(llmMag-1:ulmMag+1,n_r_ic_max) )
+      bytes_allocated = bytes_allocated+2*(ulmMag-llmMag+3)*n_r_ic_max* &
+      &                 SIZEOF_DEF_COMPLEX
+      b_ic_ext(:,:) =zero
+      aj_ic_ext(:,:)=zero
+
+   contains
+
+      subroutine check_neighbour(lm_n)
+         integer, intent(in) :: lm_n
+         if ( lm_n == llmMag-1 .or. lm_n == ulmMag+1 ) then
+            l_ic_halo=.true.
+         else if ( lm_n < llmMag .or. lm_n > ulmMag ) then
+            l_ok=.false.
+         end if
+      end subroutine check_neighbour
+
+   end subroutine initialize_ic_tilted_rotation
+!-----------------------------------------------------------------------------
+   subroutine fill_ic_halo(b_ic, aj_ic)
+      !
+      ! Copies the inner-core potentials into b_ic_ext and aj_ic_ext and, when
+      ! a degree l is split between ranks, receives the halo points llmMag-1
+      ! and ulmMag+1 from the neighbouring ranks.
+      !
+
+      !-- Input variables
+      complex(cp), intent(in) :: b_ic(llmMag:ulmMag,n_r_ic_max)
+      complex(cp), intent(in) :: aj_ic(llmMag:ulmMag,n_r_ic_max)
+
+#ifdef WITH_MPI
+      !-- Local variables
+      complex(cp) :: sbuf(n_r_ic_max,2), rbuf(n_r_ic_max,2)
+      integer :: rank_lo, rank_hi
+#endif
+
+      b_ic_ext(llmMag:ulmMag,:) =b_ic(:,:)
+      aj_ic_ext(llmMag:ulmMag,:)=aj_ic(:,:)
+
+#ifdef WITH_MPI
+      if ( .not. l_ic_halo ) return
+
+      rank_lo=rank-1
+      rank_hi=rank+1
+      if ( rank == 0 ) rank_lo=MPI_PROC_NULL
+      if ( rank == n_procs-1 ) rank_hi=MPI_PROC_NULL
+
+      !-- First point goes down to rank-1, which stores it above its range
+      sbuf(:,1)=b_ic(llmMag,:)
+      sbuf(:,2)=aj_ic(llmMag,:)
+      call MPI_Sendrecv(sbuf, 2*n_r_ic_max, MPI_DEF_COMPLEX, rank_lo, 1,  &
+           &            rbuf, 2*n_r_ic_max, MPI_DEF_COMPLEX, rank_hi, 1,  &
+           &            MPI_COMM_WORLD, MPI_STATUS_IGNORE, ierr)
+      if ( rank_hi /= MPI_PROC_NULL ) then
+         b_ic_ext(ulmMag+1,:) =rbuf(:,1)
+         aj_ic_ext(ulmMag+1,:)=rbuf(:,2)
+      end if
+
+      !-- Last point goes up to rank+1, which stores it below its range
+      sbuf(:,1)=b_ic(ulmMag,:)
+      sbuf(:,2)=aj_ic(ulmMag,:)
+      call MPI_Sendrecv(sbuf, 2*n_r_ic_max, MPI_DEF_COMPLEX, rank_hi, 2,  &
+           &            rbuf, 2*n_r_ic_max, MPI_DEF_COMPLEX, rank_lo, 2,  &
+           &            MPI_COMM_WORLD, MPI_STATUS_IGNORE, ierr)
+      if ( rank_lo /= MPI_PROC_NULL ) then
+         b_ic_ext(llmMag-1,:) =rbuf(:,1)
+         aj_ic_ext(llmMag-1,:)=rbuf(:,2)
+      end if
+#endif
+
+   end subroutine fill_ic_halo
 !-----------------------------------------------------------------------------
    subroutine finish_exp_mag(dVxBhLM, dj_exp_last)
       !

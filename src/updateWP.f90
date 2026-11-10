@@ -7,18 +7,16 @@ module updateWP_mod
    use omp_lib
    use precision_mod
    use mem_alloc, only: bytes_allocated
-   use truncation, only: lm_max, n_r_max, l_max, m_min
+   use truncation, only: lm_max, n_r_max, l_max, m_min, l_axi
    use radial_data, only: n_r_cmb, n_r_icb, nRstart, nRstop
-   use radial_functions, only: or1, or2, rho0, rgrav, visc, dLvisc, r, &
+   use radial_functions, only: r_cmb, or1, or2, rho0, rgrav, visc, dLvisc, r, &
        &                       alpha0, temp0, beta, dbeta, ogrun, l_R, &
        &                       rscheme_oc, ddLvisc, ddbeta, orho1
    use physical_parameters, only: kbotv, ktopv, ra, BuoFac, ChemFac,   &
        &                          ViscHeatFac, ThExpNb, ktopp
-   use special, only:  ellipticity_cmb, ellipticity_icb,               &
-       &               ellip_fac_cmb, ellip_fac_icb,                   &
-       &               tide_fac20, tide_fac22p, tide_fac22n,           &
-       &               omega_tide, l_vr_cmb, l_vr_icb, l_vr_bc
    use num_param, only: dct_counter, solve_counter
+   use special, only: ellip_fac_cmb, ellip_fac_icb, tide_fac20, tide_fac22p, &
+       &              tide_fac22n, omega_tide, l_vr_cmb, l_vr_icb, l2_h2_ratio
    use init_fields, only: omegaOsz_ma1, tShift_ma1, omegaOsz_ic1, tShift_ic1
    use blocking, only: lo_sub_map, lo_map, llm, ulm, st_map
    use horizontal_data, only: hdif_V
@@ -58,11 +56,17 @@ module updateWP_mod
    type(type_penta_par), public :: wMat_FD
    type(type_tri_par), public :: ellMat_FD, p0Mat_FD
    complex(cp), public, allocatable :: w_ghost(:,:), p0_ghost(:)
+   real(cp), allocatable :: wbc2_fac_cmb(:), wbc2_fac_icb(:) ! Ghost r.h.s. factors (FD, before LU)
+
+   !-- Boundary values due to the prescribed motion of the boundaries (standard lm order)
+   complex(cp), allocatable :: wbc_cmb(:), wbc_icb(:)   ! W at the boundaries
+   complex(cp), allocatable :: wbc2_cmb(:), wbc2_icb(:) ! r.h.s. of the second b.c. on W
    integer :: maxThreads, size_rhs1
 
    public :: initialize_updateWP, finalize_updateWP, updateWP, assemble_pol,       &
    &         finish_exp_pol, get_pol_rhs_imp, finish_exp_pol_Rdist, fill_ghosts_W, &
-   &         prepareW_FD, updateW_FD, get_pol_rhs_imp_ghost, assemble_pol_Rloc
+   &         prepareW_FD, updateW_FD, get_pol_rhs_imp_ghost, assemble_pol_Rloc,   &
+   &         update_wbc
 
 contains
 
@@ -178,6 +182,10 @@ contains
 
          call p0Mat_FD%initialize(1,n_r_max,1,1)
          call wMat_FD%initialize(1,n_r_max,0,l_max)
+         allocate( wbc2_fac_cmb(0:l_max), wbc2_fac_icb(0:l_max) )
+         bytes_allocated=bytes_allocated+2*(l_max+1)*SIZEOF_DEF_REAL
+         wbc2_fac_cmb(:)=0.0_cp
+         wbc2_fac_icb(:)=0.0_cp
 
          !-- Allocate an array with ghost zones
          allocate( w_ghost(lm_max,nRstart-2:nRstop+2), p0_ghost(nRstart-1:nRstop+1) )
@@ -204,6 +212,14 @@ contains
 
       allocate( lWPmat(0:l_max) )
       bytes_allocated=bytes_allocated+(l_max+1)*SIZEOF_LOGICAL
+
+
+      allocate( wbc_cmb(lm_max), wbc_icb(lm_max), wbc2_cmb(lm_max), wbc2_icb(lm_max) )
+      bytes_allocated=bytes_allocated+4*lm_max*SIZEOF_DEF_COMPLEX
+      wbc_cmb(:) =zero
+      wbc_icb(:) =zero
+      wbc2_cmb(:)=zero
+      wbc2_icb(:)=zero
 
    end subroutine initialize_updateWP
 !-----------------------------------------------------------------------------
@@ -243,16 +259,18 @@ contains
       else ! Parallel solver
          call p0Mat_FD%finalize()
          call wMat_FD%finalize()
-         deallocate( w_ghost, p0_ghost )
+         deallocate( w_ghost, p0_ghost, wbc2_fac_cmb, wbc2_fac_icb )
          if ( l_RMS .or. l_FluxProfs ) deallocate( dwold )
          if ( tscheme%l_assembly .and. l_double_curl ) call ellMat_FD%finalize()
       end if
       if ( tscheme%l_assembly .and. l_double_curl ) deallocate(l_ellMat)
       deallocate( lWPmat )
 
+      deallocate( wbc_cmb, wbc_icb, wbc2_cmb, wbc2_icb )
+
    end subroutine finalize_updateWP
 !-----------------------------------------------------------------------------
-   subroutine updateWP(time, s, xi, w, dw, ddw, dwdt, p, dp, dpdt, tscheme, &
+   subroutine updateWP(s, xi, w, dw, ddw, dwdt, p, dp, dpdt, tscheme, &
               &        lRmsNext, lPressNext)
       !
       !  updates the poloidal velocity potential w, the pressure p, and
@@ -263,7 +281,6 @@ contains
       class(type_tscheme), intent(in) :: tscheme
       logical,             intent(in) :: lRmsNext
       logical,             intent(in) :: lPressNext
-      real(cp),            intent(in) :: time
       type(type_tarray), intent(inout) :: dpdt
       type(type_tarray), intent(inout) :: dwdt
       complex(cp),       intent(inout) :: s(llm:ulm,n_r_max)
@@ -276,6 +293,7 @@ contains
       complex(cp),       intent(out) :: dp(llm:ulm,n_r_max)
 
       !-- Local variables:
+      integer :: lms        ! position of (l,m) in the standard order
       integer :: l1,m1      ! degree and order
       integer :: lm1,lm     ! position of (l,m) in array
       integer :: nLMB2
@@ -398,7 +416,7 @@ contains
                !$omp task if (nChunks>1) default(shared) &
                !$omp firstprivate(iChunk) &
                !$omp private(lmB0,lm,lm1,m1,nR,n_r_out) &
-               !$omp private(threadid)
+               !$omp private(threadid,lms)
 
 #ifdef WITHOMP
                threadid = omp_get_thread_num()
@@ -410,72 +428,17 @@ contains
                   lm1=lm22lm(lm,nLMB2,nLMB)
                   m1 =lm22m(lm,nLMB2,nLMB)
 
-                  rhs1(1,2*lm-1,threadid)      =0.0_cp
-                  rhs1(1,2*lm,threadid)        =0.0_cp
-                  rhs1(n_r_max,2*lm-1,threadid)=0.0_cp
-                  rhs1(n_r_max,2*lm,threadid)  =0.0_cp
-
-                  if ( l_vr_bc ) then
-
-                     if ( l1 == 2 .and. m1 == 0 ) then
-                        rhs1(1,2*lm-1,threadid)=rhs1(1,2*lm-1,threadid)         &
-                        &                  + tide_fac20 * cos(omega_tide*time)
-                     end if
-
-                     if ( l1 == 2 .and. m1 == 2 ) then
-                        rhs1(1,2*lm-1,threadid)=ellip_fac_cmb &
-                        &                       *cos(omegaOsz_ma1*(time+tShift_ma1))
-                        rhs1(1,2*lm,threadid)  =ellip_fac_cmb &
-                        &                       *sin(omegaOsz_ma1*(time+tShift_ma1))
-
-                        rhs1(n_r_max,2*lm-1,threadid)=ellip_fac_icb &
-                        &                             *cos(omegaOsz_ic1*(time+tShift_ic1))
-                        rhs1(n_r_max,2*lm,threadid)  =ellip_fac_icb &
-                        &                             *sin(omegaOsz_ic1*(time+tShift_ic1))
-
-
-                        ! tide_fac22p -> (2,2,1)
-                        ! tide_fac22n -> (2,2,3)
-                        ! (2,2,3) must have the same signed frequency
-                        ! as (2,0,1) above while (2,2,1) has the opposite
-                        ! sign in the rotating frame (Ogilvie, 2014)
-                        rhs1(1,2*lm-1,threadid)=rhs1(1,2*lm-1,threadid)       &
-                        &                 + (tide_fac22p + tide_fac22n)       &
-                        &                    * cos(omega_tide*time)
-                        rhs1(1,2*lm,threadid)  =rhs1(1,2*lm,threadid)         &
-                        &                 +  (tide_fac22p - tide_fac22n)      &
-                        &                    * sin(omega_tide*time)
-
-                     end if
-                  end if
+                  lms=st_map%lm2(l1,m1)
+                  rhs1(1,2*lm-1,threadid)      = real(wbc_cmb(lms))
+                  rhs1(1,2*lm,threadid)        =aimag(wbc_cmb(lms))
+                  rhs1(n_r_max,2*lm-1,threadid)= real(wbc_icb(lms))
+                  rhs1(n_r_max,2*lm,threadid)  =aimag(wbc_icb(lms))
 
                   if ( l_double_curl ) then
-                     rhs1(2,2*lm-1,threadid)        =0.0_cp
-                     rhs1(2,2*lm,threadid)          =0.0_cp
-                     rhs1(n_r_max-1,2*lm-1,threadid)=0.0_cp
-                     rhs1(n_r_max-1,2*lm,threadid)  =0.0_cp
-
-                     ! Special BC for free-slip and radial flow
-                     if ( l_vr_bc ) then
-                        if (l1 == 2 .and. m1 == 2) then
-                           if (l_vr_cmb .and. ktopv == 1) then
-                              rhs1(2,2*lm-1,threadid)=-real(l1*(l1+1),kind=cp)*or2(1)
-                              rhs1(2,2*lm,threadid)  =-real(l1*(l1+1),kind=cp)*or2(1)
-                           end if
-                           if (l_vr_icb .and. kbotv == 1) then
-                              rhs1(n_r_max-1,2*lm-1,threadid)=-real(l1*(l1+1),kind=cp)*&
-                              &                                or2(n_r_max)
-                              rhs1(n_r_max-1,2*lm,threadid)  =-real(l1*(l1+1),kind=cp)*&
-                              &                                or2(n_r_max)
-                           end if
-                        end if
-
-                        if (l1 == 2 .and. m1 == 0) then
-                           if (l_vr_cmb .and. ktopv == 1) then
-                              rhs1(2,2*lm-1,threadid)=-real(l1*(l1+1),kind=cp)*or2(1)
-                           end if
-                        end if
-                     end if
+                     rhs1(2,2*lm-1,threadid)        = real(wbc2_cmb(lms))
+                     rhs1(2,2*lm,threadid)          =aimag(wbc2_cmb(lms))
+                     rhs1(n_r_max-1,2*lm-1,threadid)= real(wbc2_icb(lms))
+                     rhs1(n_r_max-1,2*lm,threadid)  =aimag(wbc2_icb(lms))
 
                      do nR=3,n_r_max-2
                         rhs1(nR,2*lm-1,threadid)= real(work_LMloc(lm1,nR))
@@ -504,10 +467,10 @@ contains
                         end do
                      end if
                   else
-                     rhs1(n_r_max+1,2*lm-1,threadid)=0.0_cp
-                     rhs1(n_r_max+1,2*lm,threadid)  =0.0_cp
-                     rhs1(2*n_r_max,2*lm-1,threadid)=0.0_cp
-                     rhs1(2*n_r_max,2*lm,threadid)  =0.0_cp
+                     rhs1(n_r_max+1,2*lm-1,threadid)= real(wbc2_cmb(lms))
+                     rhs1(n_r_max+1,2*lm,threadid)  =aimag(wbc2_cmb(lms))
+                     rhs1(2*n_r_max,2*lm-1,threadid)= real(wbc2_icb(lms))
+                     rhs1(2*n_r_max,2*lm,threadid)  =aimag(wbc2_icb(lms))
                      do nR=2,n_r_max-1
                         rhs1(nR,2*lm-1,threadid)        = real(work_LMloc(lm1,nR))
                         rhs1(nR,2*lm,threadid)          =aimag(work_LMloc(lm1,nR))
@@ -635,18 +598,17 @@ contains
 
    end subroutine updateWP
 !------------------------------------------------------------------------------
-   subroutine prepareW_FD(time, tscheme, dwdt, lPressNext)
+   subroutine prepareW_FD(tscheme, dwdt, lPressNext)
 
       !-- Input of variable
       logical,             intent(in) :: lPressNext
-      real(cp),            intent(in) :: time
       class(type_tscheme), intent(in) :: tscheme
 
       !-- Input/output of scalar fields:
       type(type_tarray), intent(inout) :: dwdt
 
       !-- Local variables
-      integer :: nR, lm_start, lm_stop, lm, l, m, lm00
+      integer :: nR, lm_start, lm_stop, lm, l, lm00
 
       !-- LU factorisation of the matrix if needed
       if ( .not. lWPmat(1) ) then
@@ -669,7 +631,7 @@ contains
          if ( nRstart == n_r_cmb ) p0_ghost(nRstart)=zero
       end if
 
-      !$omp parallel default(shared) private(lm_start,lm_stop, nR, l, m, lm)
+      !$omp parallel default(shared) private(lm_start,lm_stop, nR, l, lm)
       lm_start=1; lm_stop=lm_max
       call get_openmp_blocks(lm_start,lm_stop)
       !$omp barrier
@@ -689,15 +651,8 @@ contains
          nR=n_r_cmb
          do lm=lm_start,lm_stop
             l=st_map%lm2l(lm)
-            m=st_map%lm2m(lm)
             if ( l == 0 ) cycle
-            w_ghost(lm,nR)  =zero ! Non-penetration condition
-            if (l_vr_cmb) then
-               if ( l == 2 ) then
-                  call get_radial_flow_bc(time,m,nR,w_ghost(lm,nR))
-               end if
-            end if
-
+            w_ghost(lm,nR)  =wbc_cmb(lm) ! Non-penetration condition
             w_ghost(lm,nR-1)=zero ! Ghost zones set to zero
             w_ghost(lm,nR-2)=zero
          end do
@@ -707,16 +662,24 @@ contains
          nR=n_r_icb
          do lm=lm_start,lm_stop
             l=st_map%lm2l(lm)
-            m=st_map%lm2m(lm)
             if ( l == 0 ) cycle
-            w_ghost(lm,nR)=zero ! Non-penetration condition
-            if ( l_vr_icb ) then
-               if ( l == 2 ) then
-                  call get_radial_flow_bc(time,m,nR,w_ghost(lm,nR))
-               end if
-            end if
+            w_ghost(lm,nR)  =wbc_icb(lm) ! Non-penetration condition
             w_ghost(lm,nR+1)=zero ! Ghost zones set to zero
             w_ghost(lm,nR+2)=zero
+         end do
+      end if
+
+      !-- Second b.c.: the ghost points have been eliminated in wMat_FD
+      if ( nRstart <= 2 .and. nRstop >= 2 ) then
+         do lm=lm_start,lm_stop
+            l=st_map%lm2l(lm)
+            w_ghost(lm,2)=w_ghost(lm,2)+wbc2_fac_cmb(l)*wbc2_cmb(lm)
+         end do
+      end if
+      if ( nRstart <= n_r_max-1 .and. nRstop >= n_r_max-1 ) then
+         do lm=lm_start,lm_stop
+            l=st_map%lm2l(lm)
+            w_ghost(lm,n_r_max-1)=w_ghost(lm,n_r_max-1)+wbc2_fac_icb(l)*wbc2_icb(lm)
          end do
       end if
       !$omp end parallel
@@ -734,7 +697,7 @@ contains
 
       !-- Local variables
       integer :: lm, l, lm_start, lm_stop
-      real(cp) :: dr
+      real(cp) :: c_in, c_bc, c_rhs
 
       if ( lPressNext ) then
          if ( nRstart == n_r_cmb ) then
@@ -745,45 +708,29 @@ contains
          end if
       end if
 
-      !$omp parallel default(shared) private(lm_start, lm_stop, l, lm)
+      !$omp parallel default(shared) private(lm_start, lm_stop, l, lm, c_in, c_bc, c_rhs)
       lm_start=1; lm_stop=lm_max
       call get_openmp_blocks(lm_start,lm_stop)
       !$omp barrier
 
       !-- Upper boundary
-      dr = r(2)-r(1)
       if ( nRstart == n_r_cmb ) then ! Rank with n_r_mcb
          do lm=lm_start,lm_stop
-            if ( ktopv == 1 ) then  ! Stress-free
-               wg(lm,nRstart-1)=-(one-half*(two*or1(1)+beta(1))*dr)/ &
-               &                 (one+half*(two*or1(1)+beta(1))*dr) * wg(lm,nRstart+1)
-            else ! Rigid boundary condition
-               wg(lm,nRstart-1)=wg(lm,nRstart+1) ! dw=0
-            end if
+            l=st_map%lm2l(lm)
+            call get_ghost_coeffs(n_r_cmb, l, c_in, c_bc, c_rhs)
+            wg(lm,nRstart-1)=c_in*wg(lm,nRstart+1)+c_bc*wg(lm,nRstart)+ &
+            &                c_rhs*wbc2_cmb(lm)
             wg(lm,nRstart-2)=zero
          end do
       end if
 
       !-- Lower boundary
-      dr = r(n_r_max)-r(n_r_max-1)
       if ( nRstop == n_r_icb ) then
          do lm=lm_start,lm_stop
-            if ( l_full_sphere ) then
-               l=st_map%lm2l(lm)
-               if ( l == 1 ) then
-                  wg(lm,nRstop+1)=wg(lm,nRstop-1) ! dw=0
-               else
-                  wg(lm,nRstop+1)=-wg(lm,nRstop-1) ! ddw=0
-               end if
-            else
-               if ( kbotv == 1 ) then ! Stress-free
-                  wg(lm,nRstop+1)=-(one+half*(two*or1(n_r_max)+beta(n_r_max))*dr)/ &
-                  &                (one-half*(two*or1(n_r_max)+beta(n_r_max))*dr) *&
-                  &                wg(lm,nRstop-1)
-               else
-                  wg(lm,nRstop+1)=wg(lm,nRstop-1) ! dw=0
-               end if
-            end if
+            l=st_map%lm2l(lm)
+            call get_ghost_coeffs(n_r_icb, l, c_in, c_bc, c_rhs)
+            wg(lm,nRstop+1)=c_in*wg(lm,nRstop-1)+c_bc*wg(lm,nRstop)+ &
+            &               c_rhs*wbc2_icb(lm)
             wg(lm,nRstop+2)=zero
          end do
       end if
@@ -872,6 +819,7 @@ contains
       complex(cp), intent(out) :: w(llm:ulm,n_r_max)
 
       !-- Local variables:
+      integer :: lms        ! position of (l,m) in the standard order
       integer :: l1,m1      ! degree and order
       integer :: lm1,lm     ! position of (l,m) in array
       integer :: nLMB2
@@ -925,7 +873,7 @@ contains
                !$omp task if (nChunks>1) default(shared) &
                !$omp firstprivate(iChunk) &
                !$omp private(lmB0,lm,lm1,m1,nR,n_r_out) &
-               !$omp private(threadid)
+               !$omp private(threadid,lms)
 
 #ifdef WITHOMP
                threadid = omp_get_thread_num()
@@ -935,14 +883,15 @@ contains
                lmB0=(iChunk-1)*chunksize
                do lm=lmB0+1,min(iChunk*chunksize,sizeLMB2(nLMB2,nLMB))
                   lm1=lm22lm(lm,nLMB2,nLMB)
-                  rhs0(1,2*lm-1,threadid)        =0.0_cp
-                  rhs0(1,2*lm,threadid)          =0.0_cp
-                  rhs0(2,2*lm-1,threadid)        =0.0_cp
-                  rhs0(2,2*lm,threadid)          =0.0_cp
-                  rhs0(n_r_max-1,2*lm-1,threadid)=0.0_cp
-                  rhs0(n_r_max-1,2*lm,threadid)  =0.0_cp
-                  rhs0(n_r_max,2*lm-1,threadid)  =0.0_cp
-                  rhs0(n_r_max,2*lm,threadid)    =0.0_cp
+                  lms=st_map%lm2(l1,lm22m(lm,nLMB2,nLMB))
+                  rhs0(1,2*lm-1,threadid)        = real(wbc_cmb(lms))
+                  rhs0(1,2*lm,threadid)          =aimag(wbc_cmb(lms))
+                  rhs0(2,2*lm-1,threadid)        = real(wbc2_cmb(lms))
+                  rhs0(2,2*lm,threadid)          =aimag(wbc2_cmb(lms))
+                  rhs0(n_r_max-1,2*lm-1,threadid)= real(wbc2_icb(lms))
+                  rhs0(n_r_max-1,2*lm,threadid)  =aimag(wbc2_icb(lms))
+                  rhs0(n_r_max,2*lm-1,threadid)  = real(wbc_icb(lms))
+                  rhs0(n_r_max,2*lm,threadid)    =aimag(wbc_icb(lms))
                   do nR=3,n_r_max-2
                      rhs0(nR,2*lm-1,threadid)= real(work(lm1,nR))
                      rhs0(nR,2*lm,threadid)  =aimag(work(lm1,nR))
@@ -1482,7 +1431,7 @@ contains
 
    end subroutine get_pol_rhs_imp_ghost
 !------------------------------------------------------------------------------
-   subroutine assemble_pol(time, s, xi, w, dw, ddw, p, dp, dwdt, dpdt, dp_expl, &
+   subroutine assemble_pol(s, xi, w, dw, ddw, p, dp, dwdt, dpdt, dp_expl, &
               &            tscheme, lPressNext, lRmsNext)
       !
       ! This subroutine is used to assemble w and dw/dr when IMEX RK time schemes
@@ -1495,7 +1444,6 @@ contains
       complex(cp),         intent(in) :: xi(llm:ulm,n_r_max)
       complex(cp),         intent(in) :: dp_expl(llm:ulm,n_r_max)
       class(type_tscheme), intent(in) :: tscheme
-      real(cp),            intent(in) :: time
       logical,             intent(in) :: lPressNext
       logical,             intent(in) :: lRmsNext
 
@@ -1510,7 +1458,8 @@ contains
 
       !-- Local variables
       complex(cp) :: Dif, Buo
-      real(cp) :: fac_top, fac_bot
+      real(cp) :: a2_cmb, a1_cmb, a0_cmb, a2_icb, a1_icb, a0_icb
+      integer :: lms
       integer :: n_r_top, n_r_bot, l1, m1, lmStart_00
       integer :: n_r, lm, start_lm, stop_lm
       integer, pointer :: lm2l(:), lm2m(:)
@@ -1653,7 +1602,8 @@ contains
 
       else
 
-         !$omp parallel default(shared)  private(start_lm,stop_lm,n_r,lm,l1,dL,m1,Dif,Buo)
+         !$omp parallel default(shared)  private(start_lm,stop_lm,n_r,lm,l1,dL,m1,Dif,Buo) &
+         !$omp private(lms,a2_cmb,a1_cmb,a0_cmb,a2_icb,a1_icb,a0_icb)
          start_lm=lmStart_00; stop_lm=ulm
          call get_openmp_blocks(start_lm,stop_lm)
          !$omp barrier
@@ -1674,69 +1624,18 @@ contains
             end do
          end do
 
-         !-- Non-penetration: u_r=0 -> w_lm=0 on both boundaries
+         !-- Boundary conditions: W and a2*ddW+a1*dW+a0*W at both boundaries
          do lm=start_lm,stop_lm
-            w(lm,1)      =zero
-            w(lm,n_r_max)=zero
-
-            if ( l_vr_bc ) then
-               l1 = lm2l(lm)
-               m1 = lm2m(lm)
-               if ( l1 == 2 ) then
-                  call get_radial_flow_bc(time, m1, 1, w(lm,1))
-                  call get_radial_flow_bc(time, m1, n_r_max, w(lm,n_r_max))
-               end if
-            end if
+            l1 =lm2l(lm)
+            lms=st_map%lm2(l1,lm2m(lm))
+            w(lm,1)      =wbc_cmb(lms)
+            w(lm,n_r_max)=wbc_icb(lms)
+            call get_bc2_coeffs(n_r_cmb, l1, a2_cmb, a1_cmb, a0_cmb)
+            call get_bc2_coeffs(n_r_icb, l1, a2_icb, a1_icb, a0_icb)
+            call rscheme_oc%robin_bc(a2_cmb, a1_cmb, wbc2_cmb(lms)-a0_cmb*w(lm,1),     &
+                 &                   a2_icb, a1_icb, wbc2_icb(lms)-a0_icb*w(lm,n_r_max), &
+                 &                   dw(lm,:))
          end do
-
-         !-- Other boundary condition: stress-free or rigid
-         if ( l_full_sphere ) then
-            if ( ktopv == 1 ) then ! Stress-free
-               fac_top=-two*or1(1)-beta(1)
-               do lm=start_lm,stop_lm
-                  l1 = lm2l(lm)
-                  if ( l1 == 1 ) then
-                     call rscheme_oc%robin_bc(one, fac_top, zero, 0.0_cp, one, zero, dw(lm,:))
-                  else
-                     call rscheme_oc%robin_bc(one, fac_top, zero, one, 0.0_cp, zero, dw(lm,:))
-                  end if
-               end do
-            else
-               do lm=start_lm,stop_lm
-                  l1 = lm2l(lm)
-                  if ( l1 == 1 ) then
-                     dw(lm,1)      =zero
-                     dw(lm,n_r_max)=zero
-                  else
-                     call rscheme_oc%robin_bc(0.0_cp, one, zero, one, 0.0_cp, zero, dw(lm,:))
-                  end if
-               end do
-            end if
-         else ! Spherical shell
-            if ( ktopv /= 1 .and. kbotv /= 1 ) then ! Rigid at both boundaries
-               do lm=start_lm,stop_lm
-                  dw(lm,1)      =zero
-                  dw(lm,n_r_max)=zero
-               end do
-            else if ( ktopv /= 1 .and. kbotv == 1 ) then ! Rigid top/Stress-free bottom
-               fac_bot=-two*or1(n_r_max)-beta(n_r_max)
-               do lm=start_lm,stop_lm
-                  call rscheme_oc%robin_bc(0.0_cp, one, zero, one, fac_bot, zero, dw(lm,:))
-               end do
-            else if ( ktopv == 1 .and. kbotv /= 1 ) then ! Rigid bottom/Stress-free top
-               fac_top=-two*or1(1)-beta(1)
-               do lm=start_lm,stop_lm
-                  call rscheme_oc%robin_bc(one, fac_top, zero, 0.0_cp, one, zero, dw(lm,:))
-               end do
-            else if ( ktopv == 1 .and. kbotv == 1 ) then ! Stress-free at both boundaries
-               fac_bot=-two*or1(n_r_max)-beta(n_r_max)
-               fac_top=-two*or1(1)-beta(1)
-               do lm=start_lm,stop_lm
-                  call rscheme_oc%robin_bc(one, fac_top, zero, one, fac_bot, zero, dw(lm,:))
-               end do
-            end if
-
-         end if
 
          !$omp single
          call dct_counter%start_count()
@@ -1821,7 +1720,7 @@ contains
 
    end subroutine assemble_pol
 !------------------------------------------------------------------------------
-   subroutine assemble_pol_Rloc(time, block_sze, nblocks, w, dw, ddw, p, dp, dwdt, dp_expl, &
+   subroutine assemble_pol_Rloc(block_sze, nblocks, w, dw, ddw, p, dp, dwdt, dp_expl, &
               &                 tscheme, lPressNext, lRmsNext)
       !
       ! This subroutine is used to assemble w and dw/dr when IMEX RK time schemes
@@ -1835,7 +1734,6 @@ contains
       class(type_tscheme), intent(in) :: tscheme
       logical,             intent(in) :: lPressNext
       logical,             intent(in) :: lRmsNext
-      real(cp),            intent(in) :: time
 
       !-- Output variables
       type(type_tarray), intent(inout) :: dwdt
@@ -1847,7 +1745,7 @@ contains
 
       !-- Local variables
       integer :: nlm_block, start_lm, stop_lm, req, tag, lms_block
-      integer :: n_r, lm, l, m
+      integer :: n_r, lm, l
       complex(cp) :: work_Rloc(lm_max, nRstart:nRstop)
       complex(cp) :: work_ghost(lm_max, nRstart-1:nRstop+1)
       integer :: array_of_requests(4*nblocks)
@@ -1874,22 +1772,12 @@ contains
       !-- Non-penetration boundary condition
       if ( nRstart==n_r_cmb ) then
          do lm=start_lm,stop_lm
-            work_Rloc(lm,n_r_cmb)=zero
-            if ( l_vr_cmb ) then
-               l = st_map%lm2l(lm)
-               m = st_map%lm2m(lm)
-               if ( l == 2 ) call get_radial_flow_bc(time, m, n_r_cmb, work_Rloc(lm,n_r_cmb))
-            end if
+            work_Rloc(lm,n_r_cmb)=wbc_cmb(lm)
          end do
       end if
       if ( nRstop==n_r_icb ) then
          do lm=start_lm,stop_lm
-            work_Rloc(lm,n_r_icb)=zero
-            if ( l_vr_icb ) then
-               l = st_map%lm2l(lm)
-               m = st_map%lm2m(lm)
-               if ( l == 2 ) call get_radial_flow_bc(time, m, n_r_icb, work_Rloc(lm,n_r_icb))
-            end if
+            work_Rloc(lm,n_r_icb)=wbc_icb(lm)
          end do
       end if
 
@@ -1996,8 +1884,11 @@ contains
       integer :: nR,nR_out,nR_p,nR_out_p
       integer :: info
       real(cp) :: dLh
+      real(cp) :: a2_cmb, a1_cmb, a0_cmb, a2_icb, a1_icb, a0_icb ! Second b.c. on W
 
       dLh =real(l*(l+1),kind=cp)
+      call get_bc2_coeffs(n_r_cmb, l, a2_cmb, a1_cmb, a0_cmb)
+      call get_bc2_coeffs(n_r_icb, l, a2_icb, a1_icb, a0_icb)
 
       !-- Now mode l>0
 
@@ -2011,35 +1902,15 @@ contains
          &                       rscheme_oc%rMat(n_r_max,nR_out)
          wpMat%dat(n_r_max,nR_out_p)=0.0_cp
 
-         if ( ktopv == 1 ) then  ! free slip !
-            wpMat%dat(n_r_max+1,nR_out)= rscheme_oc%rnorm * (        &
-            &                        rscheme_oc%d2rMat(1,nR_out) -   &
-            &    (two*or1(1)+beta(1))*rscheme_oc%drMat(1,nR_out) )
-         else                    ! no slip, note exception for l=1,m=0
-            wpMat%dat(n_r_max+1,nR_out)=rscheme_oc%rnorm*    &
-            &                       rscheme_oc%drMat(1,nR_out)
-         end if
+         wpMat%dat(n_r_max+1,nR_out)=rscheme_oc%rnorm*(                &
+         &                  a2_cmb*rscheme_oc%d2rMat(1,nR_out)+         &
+         &                  a1_cmb*rscheme_oc%drMat(1,nR_out)+          &
+         &                  a0_cmb*rscheme_oc%rMat(1,nR_out))
          wpMat%dat(n_r_max+1,nR_out_p)=0.0_cp
-
-         if ( l_full_sphere ) then
-            if ( l == 1 ) then
-               wpMat%dat(2*n_r_max,nR_out)=rscheme_oc%rnorm * &
-               &                       rscheme_oc%drMat(n_r_max,nR_out)
-            else
-               wpMat%dat(2*n_r_max,nR_out)=rscheme_oc%rnorm * &
-               &                       rscheme_oc%d2rMat(n_r_max,nR_out)
-            end if
-         else
-            if ( kbotv == 1 ) then  ! free slip !
-               wpMat%dat(2*n_r_max,nR_out)=rscheme_oc%rnorm * (       &
-               &                  rscheme_oc%d2rMat(n_r_max,nR_out) - &
-               &      ( two*or1(n_r_max)+beta(n_r_max))*              &
-               &                  rscheme_oc%drMat(n_r_max,nR_out))
-            else                 ! no slip, note exception for l=1,m=0
-               wpMat%dat(2*n_r_max,nR_out)=rscheme_oc%rnorm * &
-               &                       rscheme_oc%drMat(n_r_max,nR_out)
-            end if
-         end if
+         wpMat%dat(2*n_r_max,nR_out)  =rscheme_oc%rnorm*(              &
+         &                  a2_icb*rscheme_oc%d2rMat(n_r_max,nR_out)+   &
+         &                  a1_icb*rscheme_oc%drMat(n_r_max,nR_out)+    &
+         &                  a0_icb*rscheme_oc%rMat(n_r_max,nR_out))
          wpMat%dat(2*n_r_max,nR_out_p)=0.0_cp
 
       end do   !  loop over nR_out
@@ -2189,6 +2060,7 @@ contains
       integer :: nR, nR_out
       integer :: info
       real(cp) :: dLh
+      real(cp) :: a2_cmb, a1_cmb, a0_cmb, a2_icb, a1_icb, a0_icb ! Second b.c. on W
       real(cp) :: dat(n_r_max,n_r_max)
 
       dLh =real(l*(l+1),kind=cp)
@@ -2196,18 +2068,14 @@ contains
       !----- Boundary conditions:
       dat(1,:)      =rscheme_oc%rnorm*rscheme_oc%rMat(1,:)
       dat(n_r_max,:)=rscheme_oc%rnorm*rscheme_oc%rMat(n_r_max,:)
-      if ( ktopv == 1 ) then
-         dat(2,:)=rscheme_oc%rnorm*(rscheme_oc%d2rMat(1,:)-(beta(1)+two*or1(1))* &
-         &                          rscheme_oc%drMat(1,:))
-      else
-         dat(2,:)=rscheme_oc%rnorm*rscheme_oc%drMat(1,:)
-      end if
-      if ( kbotv == 1 ) then
-         dat(n_r_max-1,:)=rscheme_oc%rnorm*(rscheme_oc%d2rMat(n_r_max,:)-&
-         &                (beta(n_r_max)+two*or1(n_r_max))*rscheme_oc%drMat(n_r_max,:))
-      else
-         dat(n_r_max-1,:)=rscheme_oc%rnorm*rscheme_oc%drMat(n_r_max,:)
-      end if
+      call get_bc2_coeffs(n_r_cmb, l, a2_cmb, a1_cmb, a0_cmb)
+      call get_bc2_coeffs(n_r_icb, l, a2_icb, a1_icb, a0_icb)
+      dat(2,:)      =rscheme_oc%rnorm*(a2_cmb*rscheme_oc%d2rMat(1,:)+         &
+      &                                a1_cmb*rscheme_oc%drMat(1,:)+          &
+      &                                a0_cmb*rscheme_oc%rMat(1,:))
+      dat(n_r_max-1,:)=rscheme_oc%rnorm*(a2_icb*rscheme_oc%d2rMat(n_r_max,:)+ &
+      &                                  a1_icb*rscheme_oc%drMat(n_r_max,:)+  &
+      &                                  a0_icb*rscheme_oc%rMat(n_r_max,:))
 
       !----- Bulk points:
       do nR_out=1,n_r_max
@@ -2254,6 +2122,7 @@ contains
       integer :: nR, nR_out
       integer :: info
       real(cp) :: dLh
+      real(cp) :: a2_cmb, a1_cmb, a0_cmb, a2_icb, a1_icb, a0_icb ! Second b.c. on W
       real(cp) :: dat(n_r_max,n_r_max)
 
       dLh =real(l*(l+1),kind=cp)
@@ -2264,28 +2133,14 @@ contains
       dat(n_r_max,:)=rscheme_oc%rnorm*rscheme_oc%rMat(n_r_max,:)
 
       !-- Second line and n_r_max-1 lines are used for the second BCs
-      if ( ktopv == 1 ) then  ! free slip
-         dat(2,:)=rscheme_oc%rnorm *(rscheme_oc%d2rMat(1,:)-   &
-         &               (two*or1(1)+beta(1))*rscheme_oc%drMat(1,:) )
-      else                    ! no slip
-         dat(2,:)=rscheme_oc%rnorm*rscheme_oc%drMat(1,:)
-      end if
-
-      if ( l_full_sphere ) then
-         if ( l == 1 ) then
-            dat(n_r_max-1,:)=rscheme_oc%rnorm*rscheme_oc%drMat(n_r_max,:)
-         else
-            dat(n_r_max-1,:)=rscheme_oc%rnorm*rscheme_oc%d2rMat(n_r_max,:)
-         end if
-      else
-         if ( kbotv == 1 ) then  ! free slip
-            dat(n_r_max-1,:)=rscheme_oc%rnorm *(rscheme_oc%d2rMat(n_r_max,:)-  &
-            &                      (two*or1(n_r_max)+beta(n_r_max))*           &
-            &                                    rscheme_oc%drMat(n_r_max,:) )
-         else                 ! no slip
-            dat(n_r_max-1,:)=rscheme_oc%rnorm*rscheme_oc%drMat(n_r_max,:)
-         end if
-      end if
+      call get_bc2_coeffs(n_r_cmb, l, a2_cmb, a1_cmb, a0_cmb)
+      call get_bc2_coeffs(n_r_icb, l, a2_icb, a1_icb, a0_icb)
+      dat(2,:)        =rscheme_oc%rnorm*(a2_cmb*rscheme_oc%d2rMat(1,:)+       &
+      &                                  a1_cmb*rscheme_oc%drMat(1,:)+        &
+      &                                  a0_cmb*rscheme_oc%rMat(1,:))
+      dat(n_r_max-1,:)=rscheme_oc%rnorm*(a2_icb*rscheme_oc%d2rMat(n_r_max,:)+ &
+      &                                  a1_icb*rscheme_oc%drMat(n_r_max,:)+  &
+      &                                  a0_icb*rscheme_oc%rMat(n_r_max,:))
 
       if ( rscheme_oc%n_max < n_r_max ) then ! fill with zeros !
          do nR_out=rscheme_oc%n_max+1,n_r_max
@@ -2419,10 +2274,10 @@ contains
 
       !-- local variables:
       integer :: nR, l
-      real(cp) :: dLh, dr, fac
+      real(cp) :: dLh, c_in, c_bc, c_rhs
 
       !----- Bulk points (first and last lines always set for non-penetration condition)
-      !$omp parallel default(shared) private(nR,l,dLh,dr,fac)
+      !$omp parallel default(shared) private(nR,l,dLh,c_in,c_bc,c_rhs)
       !$omp do
       do nR=2,n_r_max-1
          do l=1,l_max
@@ -2504,35 +2359,16 @@ contains
          wMat%up1(l,n_r_max) =0.0_cp
          wMat%up2(l,n_r_max) =0.0_cp
 
-         !-- Second part of B.C.
-         if ( ktopv == 1 ) then ! free slip
-            dr=r(2)-r(1)
-            fac=(one-half*(two*or1(1)+beta(1))*dr)/(one+half*(two*or1(1)+beta(1))*dr)
-            wMat%diag(l,2)=wMat%diag(l,2)-fac*wMat%low2(l,2)
-            wMat%low1(l,2)=wMat%low1(l,2)+two/(one+half*(two*or1(1)+beta(1))*dr)*&
-            &              wMat%low2(l,2)
-         else ! No slip
-            wMat%diag(l,2)=wMat%diag(l,2)+wMat%low2(l,2)
-         end if
+         !-- Second part of B.C.: eliminate the ghost points
+         call get_ghost_coeffs(n_r_cmb, l, c_in, c_bc, c_rhs)
+         wMat%diag(l,2)=wMat%diag(l,2)+c_in*wMat%low2(l,2)
+         wMat%low1(l,2)=wMat%low1(l,2)+c_bc*wMat%low2(l,2)
+         wbc2_fac_cmb(l)=-c_rhs*wMat%low2(l,2)
 
-         if ( l_full_sphere ) then
-            if ( l== 1 ) then ! dw=0
-               wMat%diag(l,n_r_max-1)=wMat%diag(l,n_r_max-1)+wMat%up2(l,n_r_max-1)
-            else ! ddw=0
-               wMat%diag(l,n_r_max-1)=wMat%diag(l,n_r_max-1)-wMat%up2(l,n_r_max-1)
-            end if
-         else
-            if ( kbotv == 1 ) then ! free-slip
-               dr=r(n_r_max)-r(n_r_max-1)
-               fac=(one+half*(two*or1(n_r_max)+beta(n_r_max))*dr)/ &
-               &   (one-half*(two*or1(n_r_max)+beta(n_r_max))*dr)
-               wMat%diag(l,n_r_max-1)=wMat%diag(l,n_r_max-1)-fac*wMat%up2(l,n_r_max-1)
-               wMat%up1(l,n_r_max-1)=wMat%up1(l,n_r_max-1)+two*wMat%up2(l,n_r_max-1) &
-               &                     /(one-half*(two*or1(n_r_max)+beta(n_r_max))*dr)
-            else ! no slip
-               wMat%diag(l,n_r_max-1)=wMat%diag(l,n_r_max-1)+wMat%up2(l,n_r_max-1)
-            end if
-         end if
+         call get_ghost_coeffs(n_r_icb, l, c_in, c_bc, c_rhs)
+         wMat%diag(l,n_r_max-1)=wMat%diag(l,n_r_max-1)+c_in*wMat%up2(l,n_r_max-1)
+         wMat%up1(l,n_r_max-1) =wMat%up1(l,n_r_max-1)+c_bc*wMat%up2(l,n_r_max-1)
+         wbc2_fac_icb(l)=-c_rhs*wMat%up2(l,n_r_max-1)
       end do ! Loop over \ell
       !$omp end do
       !$omp end parallel
@@ -2675,41 +2511,120 @@ contains
 
    end subroutine get_p0Mat_Rdist
 !-----------------------------------------------------------------------------
-   subroutine get_radial_flow_bc(time, m, nBC, wbc)
+!-----------------------------------------------------------------------------
+   subroutine get_bc2_coeffs(nR, l, a2, a1, a0)
+      !
+      ! Second b.c. on W at the boundary nR: a2*d2W/dr2+a1*dW/dr+a0*W=wbc2
+      ! (rigid, stress-free with a moving boundary, or regularity at r=0).
+      !
 
-      !  Purpose of this subroutine is to compute the boundary condition for the
-      !  radial flow at the inner and outer boundaries. This is used for the
-      !  time advance of the poloidal equation for the assembly stage or for
-      !  R-dist when the double curl form is used.
+      !-- Input variables:
+      integer, intent(in) :: nR ! n_r_cmb or n_r_icb
+      integer, intent(in) :: l
 
-       !-- Input variables:
-      real(cp), intent(in) :: time
-      integer, intent(in)  :: m
-      integer, intent(in)  :: nBC
       !-- Output variables:
-      complex(cp), intent(out) :: wbc
+      real(cp), intent(out) :: a2, a1, a0
 
-      if ( nBC == n_r_cmb ) then
-         if ( m == 0 ) then
-            wbc = tide_fac20 * cmplx(cos(omega_tide*time),        &
-            &                        sin(omega_tide*time), cp)
+      !-- Local variable:
+      integer :: kv
+
+      a2=0.0_cp
+      a1=one
+      a0=0.0_cp
+      if ( nR == n_r_icb .and. l_full_sphere ) then
+         if ( l /= 1 ) then ! d2W/dr2=0, dW/dr=0 for l=1
+            a2=one
+            a1=0.0_cp
          end if
-         if ( m == 2 ) then
-            wbc = ellip_fac_cmb *                                   &
-            &     cmplx(cos(omegaOsz_ma1*(time+tShift_ma1)),        &
-            &           sin(omegaOsz_ma1*(time+tShift_ma1)), cp) +  &
-            &     tide_fac22p * cmplx(cos(omega_tide*time),         &
-            &                         sin(omega_tide*time), cp) +   &
-            &     tide_fac22n * cmplx(cos(omega_tide*time),         &
-            &                        -sin(omega_tide*time), cp)
+         return
+      end if
+
+      kv=ktopv
+      if ( nR == n_r_icb ) kv=kbotv
+      if ( kv == 1 ) then ! Stress-free
+         a2=one
+         a1=-(two*or1(nR)+beta(nR))
+         a0=real(l*(l+1),cp)*or2(nR)
+      end if
+
+   end subroutine get_bc2_coeffs
+!-----------------------------------------------------------------------------
+   subroutine get_ghost_coeffs(nR, l, c_in, c_bc, c_rhs)
+      !
+      ! Ghost point beyond the boundary nR from the second b.c. on W with
+      ! centred differences:
+      ! w_ghost=c_in*w(first point inside)+c_bc*w(boundary)+c_rhs*wbc2
+      !
+
+      !-- Input variables:
+      integer, intent(in) :: nR ! n_r_cmb or n_r_icb
+      integer, intent(in) :: l
+
+      !-- Output variables:
+      real(cp), intent(out) :: c_in, c_bc, c_rhs
+
+      !-- Local variables:
+      real(cp) :: a2, a1, a0, dr, den
+
+      call get_bc2_coeffs(nR, l, a2, a1, a0)
+      if ( nR == n_r_cmb ) then
+         dr  =r(2)-r(1)
+         den =a2-half*a1*dr
+         c_in=-(a2+half*a1*dr)/den
+      else
+         dr  =r(n_r_max)-r(n_r_max-1)
+         den =a2+half*a1*dr
+         c_in=-(a2-half*a1*dr)/den
+      end if
+      c_bc =(two*a2-a0*dr*dr)/den
+      c_rhs=dr*dr/den
+
+   end subroutine get_ghost_coeffs
+!-----------------------------------------------------------------------------
+!-----------------------------------------------------------------------------
+   subroutine update_wbc(time)
+      !
+      ! Prescribed motion of the boundaries (ellipticity, tides) at a given
+      ! time: W and the r.h.s. of the second b.c. on W (see get_bc2_coeffs).
+      ! It is called once per stage, before the boundary values are used.
+      !
+
+      !-- Input variable:
+      real(cp), intent(in) :: time
+
+      !-- Local variables:
+      complex(cp) :: wtide, eiwt
+      integer :: lm20, lm22
+
+      if ( .not. (l_vr_cmb .or. l_vr_icb) ) return
+
+      !-- Only the (l=2,m=0) and (l=2,m=2) modes are forced, the other entries
+      !-- stay zero. Both modes are in the truncation, except for an
+      !-- axisymmetric run which keeps the m=0 tide only (see readNamelists).
+      lm20=st_map%lm2(2,0)
+      lm22=st_map%lm2(2,2)
+
+      if ( l_vr_cmb ) then
+         eiwt=cmplx(cos(omega_tide*time), sin(omega_tide*time), cp)
+         wtide=tide_fac20*real(eiwt)
+         wbc_cmb(lm20)=wtide
+         if ( ktopv /= 1 ) wbc2_cmb(lm20)=6.0_cp*l2_h2_ratio/r_cmb*wtide
+         if ( .not. l_axi ) then
+            !-- Relative sign from dPhi_2^-2 < 0: with the time origin chosen so that
+            !-- the (2,0) flow goes as cos(wt), the sub-main body point stays at phi=0
+            wtide=tide_fac22p*eiwt-tide_fac22n*conjg(eiwt)
+            wbc_cmb(lm22)=wtide+ellip_fac_cmb*                          &
+            &             cmplx(cos(omegaOsz_ma1*(time+tShift_ma1)),    &
+            &                   sin(omegaOsz_ma1*(time+tShift_ma1)), cp)
+            if ( ktopv /= 1 ) wbc2_cmb(lm22)=6.0_cp*l2_h2_ratio/r_cmb*wtide
          end if
       end if
 
-      if ( nBC == n_r_icb ) then
-         wbc = ellip_fac_icb * cmplx(cos(omegaOsz_ic1*(time+tShift_ic1)),      &
-         &                           sin(omegaOsz_ic1*(time+tShift_ic1)), cp)
+      if ( l_vr_icb ) then
+         wbc_icb(lm22)=ellip_fac_icb*cmplx(cos(omegaOsz_ic1*(time+tShift_ic1)), &
+         &                                 sin(omegaOsz_ic1*(time+tShift_ic1)), cp)
       end if
 
-   end subroutine get_radial_flow_bc
+   end subroutine update_wbc
 !-----------------------------------------------------------------------------
 end module updateWP_mod

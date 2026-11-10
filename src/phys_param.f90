@@ -63,7 +63,6 @@ module physical_parameters
    real(cp) :: thickStrat(nSSLmax) ! thicknesses of the stratified Layers
    integer  :: nVarEntropyGrad     ! type of stratified Layer
    character(len=72) :: interior_model ! name of the interior model
-   character(len=72) :: precession_frame ! Frame used for precession: "mantle" or "fluid"
    real(cp) :: r_cut_model    ! Percentage on the inner part of the interior model to be used
    real(cp) :: g0             ! Set to 1.0 for constant gravity
    real(cp) :: g1             ! Set to 1.0 for linear gravity
@@ -103,6 +102,7 @@ module physical_parameters
    real(cp) :: tmagcon        ! Time for magnetoconvection calculation
    real(cp) :: po             ! Poincaré number
    real(cp) :: prec_angle     ! Precession angle
+   real(cp) :: prec_angle_ic  ! Angle between the precession axis and the inner-core spin axis
    real(cp) :: dilution_fac   ! Omega^2 d/g_top for centrifugal acceleration, named after Chandrasekhar (1987)
    real(cp) :: epsPhase       ! Cahn number for phase field equatioo
    real(cp) :: phaseDiffFac   ! Diffusion term of phase field

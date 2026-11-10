@@ -29,6 +29,7 @@ module Namelists
    private
 
    integer :: runHours,runMinutes,runSeconds
+   real(cp), parameter :: prec_angle_unset=-1.0e3_cp ! prec_angle_ic not given
 
    public :: readNamelists, writeNamelists
 
@@ -86,7 +87,7 @@ contains
       &    epsS,slopeStrat,rStrat,ampStrat,                       &
       &    r_LCR,nVarDiff,nVarVisc,difExp,nVarEps,interior_model, &
       &    nVarEntropyGrad,l_isothermal,ktopp,po,prec_angle,      &
-      &    precession_frame,                                      &
+      &    prec_angle_ic,                                         &
       &    dilution_fac,stef,tmelt,phaseDiffFac,penaltyFac,       &
       &    epsPhase,ktopphi,kbotphi,ampForce
 
@@ -136,7 +137,7 @@ contains
       &    omega_ma2,omegaOsz_ma2,tShift_ma2,             &
       &    amp_mode_ma,omega_mode_ma,m_mode_ma,           &
       &    mode_symm_ma,ellipticity_cmb, amp_tide,        &
-      &    omega_tide
+      &    omega_tide, l2_h2_ratio
 
       namelist/inner_core/sigma_ratio,nRotIc,rho_ratio_ic, &
       &    omega_ic1,omegaOsz_ic1,tShift_ic1,              &
@@ -580,30 +581,32 @@ contains
       end if
 
       !-- If Poincaré number is not zero precession in turned on
-      !-- precession_frame="mantle": frame attached to the mantle (Poincare force)
-      !-- precession_frame="fluid" : frame rotating at oek about the precession
-      !--                            axis, mantle and inner core rotation imposed
-      !--                            through the boundary conditions
-      call capitalize(precession_frame)
-      l_precession = .false.
-      l_prec_fluid_frame = .false.
-      if ( po /= 0.0_cp ) then
-         if ( index(precession_frame, 'MANTLE') == 1 ) then
-            l_precession = .true.
-         else if ( index(precession_frame, 'FLUID') == 1 ) then
-            l_prec_fluid_frame = .true.
-            l_rot_ma = .true.
-            l_rot_ic = .true.
-            l_SRMA = .true.
-            l_SRIC = .true.
-            !-- A fresh start begins with a rigid rotation of the fluid and no
-            !-- stored explicit terms: use AB1 for the first step, otherwise
-            !-- the first multistep iteration over-rotates the fluid
-            if ( .not. l_start_file ) l_AB1 = .true.
-         else
-            call abortRun('! precession_frame should be either "mantle" or "fluid"')
+      if ( po == 0.0_cp ) then
+         l_precession = .false.
+      else
+         l_precession = .true.
+      end if
+
+      !-- The inner-core spin axis is tilted like the mantle's by default.
+      !-- Otherwise, the rotation of the inner core in the mantle frame is
+      !-- prescribed (see update_zbc), which requires a rigid inner boundary.
+      if ( prec_angle_ic == prec_angle_unset ) prec_angle_ic=prec_angle
+      l_prec_ic_tilt = l_precession .and. prec_angle_ic /= prec_angle .and. &
+      &                (.not. l_full_sphere)
+      if ( l_prec_ic_tilt ) then
+         if ( kbotv /= 2 ) then
+            call abortRun('! prec_angle_ic /= prec_angle requires a rigid inner core boundary (kbotv=2)')
          end if
+         if ( l_rot_ic .and. (.not. l_SRIC) ) then
+            call abortRun('! prec_angle_ic /= prec_angle requires a prescribed inner-core rotation (nRotIc=0 or -1)')
+         end if
+         l_rot_ic=.true.
+         l_SRIC  =.true.
+      end if
+
+      if ( l_precession ) then
          prec_angle = prec_angle*pi/180.0_cp
+         prec_angle_ic = prec_angle_ic*pi/180.0_cp
       end if
 
       !-- New checking of magnetic boundary condition.
@@ -762,14 +765,18 @@ contains
       l_AM=l_AM .or. l_power
 
       ! Radial flow BCs?
-      l_vr_cmb=.false.
-      l_vr_icb=.false.
-      if (ellipticity_cmb /= 0.0_cp .or. amp_tide /=0.0_cp ) l_vr_cmb=.true.
-      if (ellipticity_icb /= 0.0_cp ) l_vr_icb=.true.
-      l_vr_bc = l_vr_cmb .or. l_vr_icb
+      l_vr_cmb=ellipticity_cmb /= 0.0_cp .or. amp_tide /= 0.0_cp
+      l_vr_icb=ellipticity_icb /= 0.0_cp .and. (.not. l_full_sphere)
 
-      if ( l_vr_bc .and. (ktops /= 1 .or. kbots /= 1) ) then
-         call abortRun('! Radial flow boundary conditions not yet implemented for ktops /=1 and kbots /= 1')
+      !-- The tidal displacement of the outer boundary perturbs a fixed entropy or
+      !-- composition (a fixed flux needs no correction, see update_sbc). The
+      !-- motion due to the ellipticity does not, hence a fixed value is needed.
+      if ( (ellipticity_cmb /= 0.0_cp .and. ktops /= 1) .or. (l_vr_icb .and. kbots /= 1) ) then
+         call abortRun('! Ellipticity of the boundaries not yet implemented for ktops /=1 and kbots /= 1')
+      end if
+
+      if ( l2_h2_ratio /= 0.0_cp .and. ktopv == 1 ) then
+         call abortRun('! l2_h2_ratio /= 0 requires a no-slip outer boundary (ktopv=2)')
       end if
 
       !-- Heat boundary condition
@@ -814,6 +821,37 @@ contains
 
       ! Setting up truncation is required to set up ldif and l_max_r
       call initialize_truncation()
+
+      !-- The prescribed radial flow at the boundaries (tides, ellipticity) and
+      !-- the tidal perturbations of the scalar b.c. force the (l=2,m=0) and
+      !-- (l=2,m=2) modes. An axisymmetric run only keeps the m=0 part of the
+      !-- tide, otherwise both modes must be in the truncation.
+      if ( l_vr_cmb .or. l_vr_icb ) then
+         if ( l_max < 2 ) call abortRun('! Tides and ellipticity need l_max>=2')
+         if ( l_axi ) then
+            if ( ellipticity_cmb /= 0.0_cp .or. l_vr_icb ) then
+               call abortRun('! Ellipticity of the boundaries (m=2) is incompatible with l_axi')
+            end if
+            if ( rank == 0 ) write(output_unit,*) &
+            &    '! Axisymmetric run: only the (l=2,m=0) part of the tide is applied'
+         else if ( m_min /= 0 .or. m_max < 2 .or. mod(2,minc) /= 0 ) then
+            call abortRun('! Tides and ellipticity need the (l=2,m=0) and (l=2,m=2) modes: '// &
+                 &        'm_max>=2, minc=1 or 2 and m_min=0')
+         end if
+      end if
+
+      !-- A tilted inner core rotates about an equatorial axis, carried by the
+      !-- (l=1,m=1) mode. A conducting inner core advects its field with this
+      !-- rotation, which couples m to m+-1 (see finish_exp_mag_ic).
+      if ( l_prec_ic_tilt ) then
+         if ( l_axi .or. minc /= 1 .or. m_min /= 0 .or. m_max < 1 ) then
+            call abortRun('! prec_angle_ic /= prec_angle needs the (l=1,m=1) mode: '// &
+                 &        'minc=1, m_min=0, m_max>=1 and no l_axi')
+         end if
+         if ( l_correct_AMe ) then
+            call abortRun('! prec_angle_ic /= prec_angle is incompatible with l_correct_AMe')
+         end if
+      end if
 
       !-- Coeffs at radial levels:
       if ( l_r_fieldT .or. l_r_fieldXi) l_r_field=.true.
@@ -964,8 +1002,7 @@ contains
       write(n_out,'(''  stef            ='',ES14.6,'','')') stef
       write(n_out,'(''  tmelt           ='',ES14.6,'','')') tmelt
       write(n_out,'(''  prec_angle      ='',ES14.6,'','')') prec_angle
-      length=len_trim(precession_frame)
-      write(n_out,*) " precession_frame= """,precession_frame(1:length),""","
+      write(n_out,'(''  prec_angle_ic   ='',ES14.6,'','')') prec_angle_ic
       write(n_out,'(''  dilution_fac    ='',ES14.6,'','')') dilution_fac
       write(n_out,'(''  ampForce        ='',ES14.6,'','')') ampForce
       write(n_out,'(''  epsc0           ='',ES14.6,'','')') epsc0/sq4pi
@@ -1283,6 +1320,7 @@ contains
       write(n_out,'(''  ellipticity_cmb ='',ES14.6,'','')') ellipticity_cmb
       write(n_out,'(''  amp_tide        ='',ES14.6,'','')') amp_tide
       write(n_out,'(''  omega_tide      ='',ES14.6,'','')') omega_tide
+      write(n_out,'(''  l2_h2_ratio     ='',ES14.6,'','')') l2_h2_ratio
       write(n_out,*) "/"
 
       write(n_out,*) "&inner_core"
@@ -1408,7 +1446,7 @@ contains
       prmag       =5.0_cp
       po          =0.0_cp
       prec_angle  =23.5_cp
-      precession_frame="mantle"
+      prec_angle_ic=prec_angle_unset ! Same as prec_angle if not given
       epsc0       =0.0_cp
       epscxi0     =0.0_cp
       Bn          =1.0_cp
@@ -1417,6 +1455,7 @@ contains
       ampForce    =0.0_cp    ! External body force amplitude
       amp_tide    =0.0_cp    ! Amplitude of tide
       omega_tide  =0.0_cp    ! Frequency of tide
+      l2_h2_ratio =0.0_cp    ! Ratio of Love numbers l2/h2: lateral motion of outer boundary
 
       !-- Phase field
       tmelt       =0.0_cp    ! Melting temperature

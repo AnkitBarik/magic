@@ -45,10 +45,7 @@ Dimensionless control parameters
 
 * **prec_angle** (default :f:var:`prec_angle=23.5 <prec_angle>`) is a real. This is the angle between the precession and the rotation axes expressed in degrees.
 
-* **precession_frame** (default :f:var:`precession_frame="mantle" <precession_frame>`) is a character string. It selects the frame in which precession is computed:
-
-  - ``precession_frame="mantle"``: frame attached to the mantle, with the Poincaré force.
-  - ``precession_frame="fluid"``: frame rotating at :math:`1/E` about the precession axis. The mantle and the inner core rotate about an axis tilted by ``prec_angle`` from it, which precesses at the rate ``po``; this motion is imposed through the no-slip boundary conditions.
+* **prec_angle_ic** (default :f:var:`prec_angle_ic=prec_angle <prec_angle_ic>`) is a real. This is the angle in degrees between the precession axis and the spin axis of the inner core. The inner core spins about its own axis at the same rate as the mantle, and its spin axis precesses with the mantle's, in the plane of the mantle spin axis and the precession axis. A negative value puts it on the other side of the precession axis. When ``prec_angle_ic`` differs from ``prec_angle``, the rotation of the inner core in the mantle frame, about an axis tilted by ``prec_angle-prec_angle_ic`` from the mantle spin axis, is prescribed through the no-slip boundary condition. This requires ``kbotv=2``, ``nRotIc=0`` or ``-1`` (``omega_ic1`` is then added to the axial rotation), ``minc=1`` and ``m_min=0``. A conducting inner core advects its magnetic field with this rotation.
 
 * **radratio** (default :f:var:`radratio=0.35 <radratio>`) is a real. This is the ratio of the inner core radius :math:`r_i` to the outer core radius :math:`r_o`:
 
